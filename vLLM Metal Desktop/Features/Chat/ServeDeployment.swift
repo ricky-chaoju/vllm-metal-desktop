@@ -17,6 +17,11 @@ final class ServeDeployment: Identifiable {
     private(set) var status: ServeStatus = .idle
     private(set) var servedModelName: String?
     private(set) var adoptedPID: Int32?
+    /// The serve configuration this deployment was (last) deployed with —
+    /// kept after a stop so the user's setup survives until they delete the
+    /// deployment. `nil` only for legacy-recovered entries (falls back to the
+    /// global defaults on restart).
+    private(set) var flags: ServeFlags?
     var logs: [LogLine] = []
 
     private let supervisor = EngineSupervisor()
@@ -39,6 +44,9 @@ final class ServeDeployment: Identifiable {
     var isRunning: Bool { status == .running }
     var isStarting: Bool { status == .starting }
     var isStopping: Bool { status == .stopping }
+    var isFailed: Bool { if case .failed = status { true } else { false } }
+    /// Parked (stopped/failed/never started) — restartable and deletable.
+    var isRestartable: Bool { status == .idle || status == .stopped || isFailed }
     var openAIClient: OpenAIClient? { isRunning ? OpenAIClient(port: port) : nil }
 
     var statusText: String {
@@ -64,8 +72,20 @@ final class ServeDeployment: Identifiable {
 
     // MARK: Lifecycle
 
+    /// Starts (or restarts a stopped/failed) deployment with `flags`. A restart
+    /// begins a fresh run: previous logs clear and any adopted-process handle is
+    /// dropped — the log-line ids keep counting up so the log view's tail-follow
+    /// stays monotonic.
     func start(flags: ServeFlags) {
-        guard status == .idle else { return }
+        guard isRestartable else { return }
+        self.flags = flags
+        adoptedPID = nil
+        tailTask?.cancel()
+        tailTask = nil
+        runTask?.cancel()
+        pendingLog.removeAll()
+        logs.removeAll()
+
         let config = ServeConfig(
             model: model,
             port: port,
@@ -89,6 +109,18 @@ final class ServeDeployment: Identifiable {
                 }
             }
         }
+    }
+
+    /// Restores a parked deployment from persistence (its engine isn't running;
+    /// the saved configuration is).
+    func restore(flags: ServeFlags?) {
+        self.flags = flags
+        status = .stopped
+    }
+
+    /// Attaches the persisted configuration to a re-adopted (running) engine.
+    func adoptFlags(_ flags: ServeFlags?) {
+        self.flags = flags
     }
 
     /// Re-attaches to an orphaned serve process after an app restart. Only

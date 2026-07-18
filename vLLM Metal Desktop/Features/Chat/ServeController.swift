@@ -2,6 +2,14 @@ import Foundation
 import Observation
 import VMDCore
 
+/// Every deployment the user has set up — running or parked — with its own
+/// configuration, so a stop never loses their setup.
+private nonisolated struct PersistedDeployment: Codable, Sendable {
+    var model: String
+    var port: Int
+    var flags: ServeFlags?
+}
+
 /// App-level manager of running engines, shared via the SwiftUI environment.
 ///
 /// vLLM runs one model per engine process, so multiple models means multiple
@@ -63,6 +71,11 @@ final class ServeController {
             .appending(path: "serve_flags.json", directoryHint: .notDirectory))
     }
 
+    private var deploymentsStore: AtomicJSONStore<[PersistedDeployment]> {
+        AtomicJSONStore(url: paths.appSupport(bundleID: bundleID)
+            .appending(path: "deployments.json", directoryHint: .notDirectory))
+    }
+
     init() {
         if let loaded = try? flagsStore.load() { flags = loaded }
     }
@@ -77,8 +90,9 @@ final class ServeController {
 
     // MARK: Lifecycle
 
-    /// Starts a deployment for `modelInput` (or just activates it if that model
-    /// is already up). Other deployments keep running.
+    /// Starts a deployment for `modelInput`: activates it if already up,
+    /// restarts a parked deployment of that model (keeping its saved
+    /// configuration), or creates a new one. Other deployments keep running.
     func run() {
         let model = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { return }
@@ -87,26 +101,94 @@ final class ServeController {
             activeID = existing.id
             return
         }
+        if let parked = deployments.first(where: { $0.model == model && $0.isRestartable }) {
+            // A fresh deploy request supersedes the parked configuration —
+            // the Deploy sheet just applied the flags the user asked for.
+            activeID = parked.id
+            parked.start(flags: flags)
+            persistDeployments()
+            return
+        }
         guard let port = allocatePort() else { return }
 
         let deployment = ServeDeployment(model: model, port: port, bundleID: bundleID)
-        deployment.onStateChange = { [weak self, weak deployment] in
-            guard let self, let deployment else { return }
-            self.reap(deployment)
-            self.persistRunStates()
-        }
+        wire(deployment)
         deployments.append(deployment)
         activeID = deployment.id
         deployment.start(flags: flags)
+        persistDeployments()
     }
 
-    /// Stops the active deployment (the Server page can stop any).
+    /// Starts (or restarts) a specific deployment with its own saved
+    /// configuration, falling back to the global defaults.
+    func start(_ deployment: ServeDeployment) {
+        deployment.start(flags: deployment.flags ?? flags)
+        persistDeployments()
+    }
+
+    /// Stops the active deployment (the Server page can stop any). The
+    /// deployment stays in the list with its configuration — delete it
+    /// explicitly to make it go away.
     func stop() {
         if let active { stop(active) }
     }
 
     func stop(_ deployment: ServeDeployment) {
         deployment.stop()
+    }
+
+    /// Deletes a deployment outright (stopping its engine first if needed).
+    func remove(_ deployment: ServeDeployment) {
+        if deployment.isRunning || deployment.isStarting {
+            deployment.stop()
+        }
+        deployments.removeAll { $0.id == deployment.id }
+        if activeID == deployment.id { activeID = deployments.first?.id }
+        persistDeployments()
+    }
+
+    /// Saves an edited per-deployment configuration. When the deployment is
+    /// running, redeploys: stop, wait for the engine to exit, start with the
+    /// new flags — the "Redeploy" the config sheet promises.
+    func update(_ deployment: ServeDeployment, flags newFlags: ServeFlags) {
+        // The port is the deployment's identity — the config sheet shows it
+        // read-only, and this pin keeps any future caller honest too.
+        var newFlags = newFlags
+        newFlags.serverPort = deployment.port
+        let wasRunning = deployment.isRunning || deployment.isStarting
+        if wasRunning {
+            // "Done" with nothing changed shouldn't bounce a healthy engine.
+            guard newFlags != deployment.flags else { return }
+            deployment.stop()
+            Task {
+                // The engine needs a beat to release the port; poll briefly.
+                for _ in 0..<75 where !deployment.isRestartable {
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+                // The user may have deleted the deployment while we waited —
+                // starting it anyway would leak an engine the UI can't manage.
+                guard deployments.contains(where: { $0.id == deployment.id }) else { return }
+                deployment.start(flags: newFlags)
+                persistDeployments()
+            }
+        } else {
+            deployment.restore(flags: newFlags)
+            persistDeployments()
+        }
+    }
+
+    private func wire(_ deployment: ServeDeployment) {
+        deployment.onStateChange = { [weak self, weak deployment] in
+            guard let self else { return }
+            self.persistRunStates()
+            // Parked deployments stay in the list, so stopping the active one
+            // no longer removes it — hand Chat over to an engine that's still
+            // alive instead of leaving it pointed at a stopped entry.
+            if let deployment, deployment.id == self.activeID, deployment.isRestartable,
+               let alive = self.runningDeployments.first {
+                self.activeID = alive.id
+            }
+        }
     }
 
     /// The preferred port if free, else the next free rung on the ladder
@@ -121,53 +203,59 @@ final class ServeController {
         return PortFinder.findFree()
     }
 
-    /// Drops deployments that reached a terminal state (keeps failures visible
-    /// while they're active so the error can be read).
-    private func reap(_ deployment: ServeDeployment) {
-        switch deployment.status {
-        case .stopped:
-            deployments.removeAll { $0.id == deployment.id }
-            if activeID == deployment.id { activeID = deployments.first?.id }
-        default:
-            break
-        }
-    }
-
-    /// Removes a failed deployment after the user has seen the error.
-    func dismiss(_ deployment: ServeDeployment) {
-        deployments.removeAll { $0.id == deployment.id }
-        if activeID == deployment.id { activeID = deployments.first?.id }
-    }
-
     // MARK: Recovery
 
-    /// On launch, re-adopt still-running serves persisted by a previous app run
-    /// (including the pre-multi-deployment single-state file).
+    /// On launch, restore the deployment list: still-running engines are
+    /// re-adopted (PID + port + API verified), everything else comes back
+    /// parked with its saved configuration. Legacy single/run-state files are
+    /// folded in for upgrades.
     func recover() async {
         guard deployments.isEmpty else { return }
+
         var states = (try? runStatesStore.load()) ?? []
         if states.isEmpty, let legacy = try? legacyRunStateStore.load() {
             states = [legacy]
         }
-        guard !states.isEmpty else { return }
+        let persisted = (try? deploymentsStore.load()) ?? []
 
+        for entry in persisted {
+            let deployment = ServeDeployment(model: entry.model, port: entry.port, bundleID: bundleID)
+            wire(deployment)
+            if let state = states.first(where: { $0.port == entry.port }),
+               await deployment.adopt(state: state) {
+                states.removeAll { $0.port == entry.port }
+                deployment.adoptFlags(entry.flags)
+            } else {
+                deployment.restore(flags: entry.flags)
+            }
+            deployments.append(deployment)
+        }
+
+        // Run states with no persisted entry (pre-persistence versions).
         for state in states {
             let deployment = ServeDeployment(model: state.model, port: state.port, bundleID: bundleID)
-            deployment.onStateChange = { [weak self, weak deployment] in
-                guard let self, let deployment else { return }
-                self.reap(deployment)
-                self.persistRunStates()
-            }
+            wire(deployment)
             if await deployment.adopt(state: state) {
                 deployments.append(deployment)
-                if activeID == nil {
-                    activeID = deployment.id
-                    modelInput = state.model
-                }
             }
         }
+
+        activeID = (deployments.first { $0.isRunning } ?? deployments.first)?.id
+        if let active { modelInput = active.servedModelName ?? active.model }
         try? legacyRunStateStore.delete()
         persistRunStates()
+        persistDeployments()
+    }
+
+    private func persistDeployments() {
+        let entries = deployments.map {
+            PersistedDeployment(model: $0.model, port: $0.port, flags: $0.flags)
+        }
+        if entries.isEmpty {
+            try? deploymentsStore.delete()
+        } else {
+            try? deploymentsStore.save(entries)
+        }
     }
 
     private func persistRunStates() {

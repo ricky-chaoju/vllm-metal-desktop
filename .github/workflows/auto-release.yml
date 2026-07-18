@@ -1,0 +1,53 @@
+name: Auto Release
+
+# Every push to main (i.e. every merged PR) cuts a release automatically:
+# the next version is derived from the latest v* tag — a beta series bumps
+# its beta number (v0.1.0-beta.1 → v0.1.0-beta.2), a stable series bumps the
+# patch (v0.1.0 → v0.1.1). Put "[skip release]" in the merge commit title to
+# land a change without shipping one.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+# One release at a time; a merge landing mid-release queues behind it.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  next-version:
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Compute next version
+        id: compute
+        run: |
+          # versionsort.suffix makes v0.1.0-beta.N sort *before* v0.1.0.
+          latest=$(git -c versionsort.suffix=- tag -l 'v*' --sort=-v:refname | head -1)
+          if [[ -z "$latest" ]]; then
+            next="v0.1.0-beta.1"
+          elif [[ "$latest" == *-beta.* ]]; then
+            base="${latest%-beta.*}"
+            n="${latest##*-beta.}"
+            next="${base}-beta.$((n + 1))"
+          else
+            IFS=. read -r major minor patch <<< "${latest#v}"
+            next="v${major}.${minor}.$((patch + 1))"
+          fi
+          echo "latest=$latest next=$next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: next-version
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.next-version.outputs.tag }}
+    secrets: inherit

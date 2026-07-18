@@ -350,8 +350,6 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: Theme.Spacing.l) {
-                    // Anchor for resetting the scroll on empty conversations.
-                    Color.clear.frame(height: 0).id("chat-top")
                     ForEach(messages, id: \.persistentModelID) { message in
                         MessageBubble(
                             message: message,
@@ -374,28 +372,19 @@ struct ChatView: View {
                     withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(last, anchor: .bottom) }
                 }
             }
-            // The scroll offset survives switching conversations — a short
-            // thread would otherwise open on blank space below its content.
-            // Land on the latest message of whichever thread was selected.
-            .onChange(of: selection) { _, _ in jumpToLatest(proxy) }
-            .onAppear { jumpToLatest(proxy) }
-        }
-    }
-
-    /// Jumps (without animation) to the selected conversation's latest message.
-    /// Two steps on purpose: the stale offset inherited from a longer thread
-    /// is *not* clamped when shorter content arrives, and `scrollTo` on a row
-    /// that's already visible is a no-op — so first force the offset back to
-    /// the top, then (a layout pass later) drop to the latest message, which
-    /// does nothing when the whole thread fits on screen.
-    private func jumpToLatest(_ proxy: ScrollViewProxy) {
-        Task { @MainActor in
-            proxy.scrollTo("chat-top", anchor: .top)
-            try? await Task.sleep(for: .milliseconds(50))
-            if let target = messages.last?.persistentModelID {
-                proxy.scrollTo(target, anchor: .bottom)
+            // Land on the latest message when this conversation's scroll view
+            // appears (fresh identity per conversation, see below).
+            .onAppear {
+                if let last = messages.last?.persistentModelID {
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
             }
         }
+        // One scroll view *per conversation*: switching rebuilds it, so the
+        // offset always starts at zero and a short thread can never inherit a
+        // longer thread's scroll position (scrollTo-based resets raced the
+        // lazy row layout and silently no-opped).
+        .id(selection?.persistentModelID)
     }
 
     /// Whether the running model takes image input (from its cached config).

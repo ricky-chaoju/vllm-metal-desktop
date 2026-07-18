@@ -161,6 +161,9 @@ final class ServeController {
                 for _ in 0..<75 where !deployment.isRestartable {
                     try? await Task.sleep(for: .milliseconds(200))
                 }
+                // The user may have deleted the deployment while we waited —
+                // starting it anyway would leak an engine the UI can't manage.
+                guard deployments.contains(where: { $0.id == deployment.id }) else { return }
                 deployment.start(flags: newFlags)
                 persistDeployments()
             }

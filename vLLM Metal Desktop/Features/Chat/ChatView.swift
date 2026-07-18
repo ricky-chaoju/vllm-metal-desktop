@@ -268,7 +268,7 @@ struct ChatView: View {
         Menu {
             if !serve.deployments.isEmpty {
                 Section("Running") {
-                    ForEach(serve.deployments) { deployment in
+                    ForEach(serve.runningDeployments) { deployment in
                         Button {
                             serve.activeID = deployment.id
                         } label: {
@@ -372,7 +372,19 @@ struct ChatView: View {
                     withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(last, anchor: .bottom) }
                 }
             }
+            // Land on the latest message when this conversation's scroll view
+            // appears (fresh identity per conversation, see below).
+            .onAppear {
+                if let last = messages.last?.persistentModelID {
+                    proxy.scrollTo(last, anchor: .bottom)
+                }
+            }
         }
+        // One scroll view *per conversation*: switching rebuilds it, so the
+        // offset always starts at zero and a short thread can never inherit a
+        // longer thread's scroll position (scrollTo-based resets raced the
+        // lazy row layout and silently no-opped).
+        .id(selection?.persistentModelID)
     }
 
     /// Whether the running model takes image input (from its cached config).

@@ -1,12 +1,21 @@
 name: Release
 
-# Tag vX.Y.Z → build the Release app, package a drag-to-Applications .dmg,
-# and publish it on the GitHub release. With Developer ID secrets configured
-# the app is signed + notarized; without them it ships ad-hoc signed (users
-# right-click → Open or approve under Privacy & Security on first launch).
+# Two ways in, one pipeline: push a vX.Y.Z tag directly, or get called by
+# auto-release.yml after a merge to main (which computes the next version —
+# tags created with GITHUB_TOKEN can't trigger workflows, hence workflow_call).
+# Builds the Release app, packages a drag-to-Applications .dmg, and publishes
+# the GitHub release. With Developer ID secrets configured the app is signed +
+# notarized; without them it ships ad-hoc signed (users approve the first
+# launch under Privacy & Security).
 on:
   push:
     tags: ['v*']
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to create (e.g. v0.1.0-beta.2)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,6 +23,7 @@ permissions:
 env:
   DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
   APP_NAME: vLLM Metal Desktop
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   release:
@@ -30,7 +40,7 @@ jobs:
       - name: Archive
         run: |
           set -o pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           xcodebuild archive \
             -project "$APP_NAME.xcodeproj" \
             -scheme "$APP_NAME" \
@@ -105,10 +115,14 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
+          # When called from auto-release the tag doesn't exist yet — the
+          # release action creates it at the merged commit.
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
           files: dist/*.dmg
           generate_release_notes: true
           # v1.1.0-beta.1 style tags publish as pre-releases automatically.
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           body: |
             > **Note for unsigned builds**: if macOS blocks the first launch,
             > approve it under **System Settings → Privacy & Security → Open Anyway**,

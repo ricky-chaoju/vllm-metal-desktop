@@ -350,6 +350,8 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: Theme.Spacing.l) {
+                    // Anchor for resetting the scroll on empty conversations.
+                    Color.clear.frame(height: 0).id("chat-top")
                     ForEach(messages, id: \.persistentModelID) { message in
                         MessageBubble(
                             message: message,
@@ -371,6 +373,25 @@ struct ChatView: View {
                 if let last = messages.last?.persistentModelID {
                     withAnimation(.easeOut(duration: 0.1)) { proxy.scrollTo(last, anchor: .bottom) }
                 }
+            }
+            // The scroll offset survives switching conversations — a short
+            // thread would otherwise open on blank space below its content.
+            // Land on the latest message of whichever thread was selected.
+            .onChange(of: selection) { _, _ in jumpToLatest(proxy) }
+            .onAppear { jumpToLatest(proxy) }
+        }
+    }
+
+    /// Jumps (without animation) to the selected conversation's latest message,
+    /// or back to the top when it has none. Deferred a tick so the new
+    /// conversation's rows exist before the scroll resolves.
+    private func jumpToLatest(_ proxy: ScrollViewProxy) {
+        let target = messages.last?.persistentModelID
+        Task { @MainActor in
+            if let target {
+                proxy.scrollTo(target, anchor: .bottom)
+            } else {
+                proxy.scrollTo("chat-top", anchor: .top)
             }
         }
     }

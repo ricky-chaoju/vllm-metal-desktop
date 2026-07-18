@@ -382,16 +382,18 @@ struct ChatView: View {
         }
     }
 
-    /// Jumps (without animation) to the selected conversation's latest message,
-    /// or back to the top when it has none. Deferred a tick so the new
-    /// conversation's rows exist before the scroll resolves.
+    /// Jumps (without animation) to the selected conversation's latest message.
+    /// Two steps on purpose: the stale offset inherited from a longer thread
+    /// is *not* clamped when shorter content arrives, and `scrollTo` on a row
+    /// that's already visible is a no-op — so first force the offset back to
+    /// the top, then (a layout pass later) drop to the latest message, which
+    /// does nothing when the whole thread fits on screen.
     private func jumpToLatest(_ proxy: ScrollViewProxy) {
-        let target = messages.last?.persistentModelID
         Task { @MainActor in
-            if let target {
+            proxy.scrollTo("chat-top", anchor: .top)
+            try? await Task.sleep(for: .milliseconds(50))
+            if let target = messages.last?.persistentModelID {
                 proxy.scrollTo(target, anchor: .bottom)
-            } else {
-                proxy.scrollTo("chat-top", anchor: .top)
             }
         }
     }

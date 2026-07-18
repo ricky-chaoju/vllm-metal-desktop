@@ -60,7 +60,7 @@ struct EngineView: View {
 
     private var runningModelSection: some View {
         Section("Running Models") {
-            ForEach(serve.deployments) { deployment in
+            ForEach(serve.runningDeployments) { deployment in
                 HStack(spacing: Theme.Spacing.s) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(deployment.servedModelName ?? deployment.model)

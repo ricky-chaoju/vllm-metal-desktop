@@ -63,7 +63,7 @@ struct ServerView: View {
                 ForEach(serve.deployments) { deployment in
                     HStack(spacing: 7) {
                         Circle()
-                            .fill(deployment.isRunning ? Color.green : (deployment.isStarting ? Color.orange : Color.secondary))
+                            .fill(statusColor(deployment))
                             .frame(width: 7, height: 7)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(shortName(deployment.servedModelName ?? deployment.model))
@@ -73,6 +73,22 @@ struct ServerView: View {
                         }
                     }
                     .tag(deployment.id)
+                    .contextMenu {
+                        if deployment.isRestartable {
+                            Button { serve.start(deployment) } label: {
+                                Label("Start", systemImage: "play")
+                            }
+                        } else {
+                            Button { serve.stop(deployment) } label: {
+                                Label("Stop", systemImage: "stop")
+                            }
+                            .disabled(deployment.isStopping)
+                        }
+                        Divider()
+                        Button(role: .destructive) { serve.remove(deployment) } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
             } header: {
                 HStack {
@@ -104,6 +120,13 @@ struct ServerView: View {
         model.split(separator: "/").last.map(String.init) ?? model
     }
 
+    private func statusColor(_ deployment: ServeDeployment) -> Color {
+        if deployment.isRunning { return .green }
+        if deployment.isStarting || deployment.isStopping { return .orange }
+        if deployment.isFailed { return .red }
+        return .secondary
+    }
+
     // MARK: Detail
 
     private var detail: some View {
@@ -130,6 +153,7 @@ private struct ServerDetail: View {
     /// devices on the same network. Resolved once per appearance, not per
     /// render — the log stream re-evaluates this view every ~80ms.
     @State private var lanIP: String?
+    @State private var showConfiguration = false
 
     private var networkURL: String? {
         guard let port = deployment?.port, let ip = lanIP else { return nil }
@@ -174,6 +198,18 @@ private struct ServerDetail: View {
             }
         }
         .task { lanIP = Self.primaryIPv4() }
+        .sheet(isPresented: $showConfiguration) {
+            if let deployment {
+                // Editing a live deployment's config promises a restart —
+                // the sheet's primary button reads "Redeploy" once changed.
+                ServeFlagsSheet(
+                    flags: deployment.flags ?? serve.flags,
+                    changedActionTitle: deployment.isRestartable ? nil : "Redeploy"
+                ) { newFlags in
+                    serve.update(deployment, flags: newFlags)
+                }
+            }
+        }
     }
 
     private var narrowLayout: some View {
@@ -253,9 +289,22 @@ private struct ServerDetail: View {
                         Text("\(deployment.statusText) — \(deployment.servedModelName ?? deployment.model)")
                             .lineLimit(1)
                             .truncationMode(.middle)
-                        Button("Stop", role: .destructive) { serve.stop(deployment) }
-                            .controlSize(.small)
-                            .disabled(deployment.isStopping)
+                        Button {
+                            showConfiguration = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                        }
+                        .controlSize(.small)
+                        .help("Configuration for this deployment")
+                        if deployment.isRestartable {
+                            Button("Start") { serve.start(deployment) }
+                                .controlSize(.small)
+                                .buttonStyle(.borderedProminent)
+                        } else {
+                            Button("Stop", role: .destructive) { serve.stop(deployment) }
+                                .controlSize(.small)
+                                .disabled(deployment.isStopping)
+                        }
                     }
                     rowDivider
                     row("Base URL") { CopyableURL(url: baseURL) }

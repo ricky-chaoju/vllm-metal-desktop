@@ -268,7 +268,7 @@ struct ChatView: View {
         Menu {
             if !serve.deployments.isEmpty {
                 Section("Running") {
-                    ForEach(serve.deployments) { deployment in
+                    ForEach(serve.runningDeployments) { deployment in
                         Button {
                             serve.activeID = deployment.id
                         } label: {

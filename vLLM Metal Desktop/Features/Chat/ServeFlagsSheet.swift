@@ -5,11 +5,23 @@ import VMDCore
 struct ServeFlagsSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var flags: ServeFlags
+    private let initialFlags: ServeFlags
+    /// When set (e.g. "Redeploy" for a live deployment), the primary button
+    /// takes this title once the flags differ from what they were — making it
+    /// obvious that saving restarts the engine.
+    let changedActionTitle: String?
     let onSave: (ServeFlags) -> Void
 
-    init(flags: ServeFlags, onSave: @escaping (ServeFlags) -> Void) {
+    init(flags: ServeFlags, changedActionTitle: String? = nil, onSave: @escaping (ServeFlags) -> Void) {
         _flags = State(initialValue: flags)
+        self.initialFlags = flags
+        self.changedActionTitle = changedActionTitle
         self.onSave = onSave
+    }
+
+    private var primaryTitle: String {
+        if let changedActionTitle, flags != initialFlags { return changedActionTitle }
+        return "Done"
     }
 
     var body: some View {
@@ -40,7 +52,7 @@ struct ServeFlagsSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Done") { onSave(flags); dismiss() }
+                Button(primaryTitle) { onSave(flags); dismiss() }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
             }

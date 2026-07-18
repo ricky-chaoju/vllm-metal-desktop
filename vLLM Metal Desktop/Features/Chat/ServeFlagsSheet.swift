@@ -12,9 +12,21 @@ struct ServeFlagsSheet: View {
     let changedActionTitle: String?
     let onSave: (ServeFlags) -> Void
 
-    init(flags: ServeFlags, changedActionTitle: String? = nil, onSave: @escaping (ServeFlags) -> Void) {
+    /// An existing deployment's actual port. A deployment's port is its
+    /// identity (address, log file, persistence) — the sheet shows it fixed
+    /// instead of offering an edit that couldn't take effect. Deploy anew to
+    /// serve on a different port.
+    let fixedPort: Int?
+
+    init(
+        flags: ServeFlags,
+        fixedPort: Int? = nil,
+        changedActionTitle: String? = nil,
+        onSave: @escaping (ServeFlags) -> Void
+    ) {
         _flags = State(initialValue: flags)
         self.initialFlags = flags
+        self.fixedPort = fixedPort
         self.changedActionTitle = changedActionTitle
         self.onSave = onSave
     }
@@ -41,7 +53,7 @@ struct ServeFlagsSheet: View {
             Divider()
 
             Form {
-                ServeFlagsForm(flags: $flags)
+                ServeFlagsForm(flags: $flags, fixedPort: fixedPort)
             }
             .formStyle(.grouped)
             .scrollContentBackground(.hidden)
@@ -71,6 +83,8 @@ struct ServeFlagsSheet: View {
 /// `Section`s, so it must live inside a `Form`.
 struct ServeFlagsForm: View {
     @Binding var flags: ServeFlags
+    /// See `ServeFlagsSheet.fixedPort` — non-nil renders the port read-only.
+    var fixedPort: Int?
 
     var body: some View {
         metalSection
@@ -133,18 +147,28 @@ struct ServeFlagsForm: View {
 
         Section {
             LabeledContent("Port") {
-                // No placeholder: the port always has a value, and an interpolated
-                // Int placeholder gets locale-formatted ("8,000") and rendered
-                // alongside the value by the grouped form style.
-                TextField("", text: portText)
-                    .multilineTextAlignment(.trailing)
-                    .scaledFont(.body, monospacedDigit: true)
-                    .frame(maxWidth: 80)
+                if let fixedPort {
+                    Text(verbatim: "\(fixedPort)")
+                        .scaledFont(.body, monospacedDigit: true)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // No placeholder: the port always has a value, and an interpolated
+                    // Int placeholder gets locale-formatted ("8,000") and rendered
+                    // alongside the value by the grouped form style.
+                    TextField("", text: portText)
+                        .multilineTextAlignment(.trailing)
+                        .scaledFont(.body, monospacedDigit: true)
+                        .frame(maxWidth: 80)
+                }
             }
         } header: {
             Text("Server")
         } footer: {
-            Text("Stays the same across runs so other apps can keep pointing at one address. If it's taken, a free port is used for that run.")
+            if fixedPort != nil {
+                Text("The port is part of this deployment's address — deploy the model again to serve on a different one.")
+            } else {
+                Text("Stays the same across runs so other apps can keep pointing at one address. If it's taken, a free port is used for that run.")
+            }
         }
     }
 }

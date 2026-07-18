@@ -204,6 +204,7 @@ private struct ServerDetail: View {
                 // the sheet's primary button reads "Redeploy" once changed.
                 ServeFlagsSheet(
                     flags: deployment.flags ?? serve.flags,
+                    fixedPort: deployment.port,
                     changedActionTitle: deployment.isRestartable ? nil : "Redeploy"
                 ) { newFlags in
                     serve.update(deployment, flags: newFlags)

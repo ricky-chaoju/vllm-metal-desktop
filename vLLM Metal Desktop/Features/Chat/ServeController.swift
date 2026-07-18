@@ -151,6 +151,10 @@ final class ServeController {
     /// running, redeploys: stop, wait for the engine to exit, start with the
     /// new flags — the "Redeploy" the config sheet promises.
     func update(_ deployment: ServeDeployment, flags newFlags: ServeFlags) {
+        // The port is the deployment's identity — the config sheet shows it
+        // read-only, and this pin keeps any future caller honest too.
+        var newFlags = newFlags
+        newFlags.serverPort = deployment.port
         let wasRunning = deployment.isRunning || deployment.isStarting
         if wasRunning {
             // "Done" with nothing changed shouldn't bounce a healthy engine.
@@ -174,8 +178,16 @@ final class ServeController {
     }
 
     private func wire(_ deployment: ServeDeployment) {
-        deployment.onStateChange = { [weak self] in
-            self?.persistRunStates()
+        deployment.onStateChange = { [weak self, weak deployment] in
+            guard let self else { return }
+            self.persistRunStates()
+            // Parked deployments stay in the list, so stopping the active one
+            // no longer removes it — hand Chat over to an engine that's still
+            // alive instead of leaving it pointed at a stopped entry.
+            if let deployment, deployment.id == self.activeID, deployment.isRestartable,
+               let alive = self.runningDeployments.first {
+                self.activeID = alive.id
+            }
         }
     }
 

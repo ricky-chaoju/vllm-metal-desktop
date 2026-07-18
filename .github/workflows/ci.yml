@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  # The project uses macOS 26 SDK APIs behind #available guards, so it must
+  # compile with Xcode 26 (deployment target stays macOS 14).
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+
+jobs:
+  test:
+    name: VMDCore tests
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/cache@v6
+        with:
+          path: |
+            VMDCore/.build
+            ~/Library/Caches/org.swift.swiftpm
+          key: spm-${{ runner.os }}-${{ hashFiles('VMDCore/Package.swift') }}
+          restore-keys: spm-${{ runner.os }}-
+      - name: Run tests
+        run: swift test --package-path VMDCore
+
+  build:
+    name: App build
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project "vLLM Metal Desktop.xcodeproj" \
+            -scheme "vLLM Metal Desktop" \
+            -destination 'platform=macOS' \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO

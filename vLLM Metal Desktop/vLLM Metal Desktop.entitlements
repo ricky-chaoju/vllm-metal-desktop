@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  vLLM Metal Desktop entitlements.
+
+	  The app is intentionally NOT sandboxed: it must spawn and supervise an
+	  arbitrary long-lived Python subprocess (`vllm serve`) from a user-home
+	  virtualenv (~/.venv-vllm-metal) and open local network ports. This mirrors
+	  how LM Studio / Ollama ship — Developer ID + notarization, not the Mac App
+	  Store. See docs/PLAN.md §0, §2.5.
+
+	  Hardened Runtime stays ON (a notarization requirement). The cs.* keys below
+	  are defensive: they ensure neither the app process nor any helper it may host
+	  is killed for loading the engine's unsigned MLX/torch/_paged_ops binaries or
+	  for using JIT-compiled Metal code paths.
+	-->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!-- Allow loading unsigned / third-party-signed dylibs (MLX, libtorch, _paged_ops.so). -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
+
+	<!-- MLX / Metal shader compilation uses JIT-style executable memory. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+
+	<!-- The installer/supervisor sets VLLM_*, DYLD_*, PATH for the engine. -->
+	<key>com.apple.security.cs.allow-dyld-environment-variables</key>
+	<true/>
+</dict>
+</plist>

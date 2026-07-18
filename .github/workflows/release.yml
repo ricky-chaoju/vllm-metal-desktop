@@ -1,0 +1,115 @@
+name: Release
+
+# Tag vX.Y.Z → build the Release app, package a drag-to-Applications .dmg,
+# and publish it on the GitHub release. With Developer ID secrets configured
+# the app is signed + notarized; without them it ships ad-hoc signed (users
+# right-click → Open or approve under Privacy & Security on first launch).
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+  APP_NAME: vLLM Metal Desktop
+
+jobs:
+  release:
+    runs-on: macos-26
+    env:
+      # The secrets context is unavailable in step `if:` — bridge through env.
+      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_CERT_P12 != '' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run tests
+        run: swift test --package-path VMDCore
+
+      - name: Archive
+        run: |
+          set -o pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          xcodebuild archive \
+            -project "$APP_NAME.xcodeproj" \
+            -scheme "$APP_NAME" \
+            -destination 'platform=macOS' \
+            -configuration Release \
+            -archivePath "build/$APP_NAME.xcarchive" \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM=
+
+      - name: Stage app
+        run: |
+          mkdir -p dist/staging
+          cp -R "build/$APP_NAME.xcarchive/Products/Applications/$APP_NAME.app" dist/staging/
+
+      - name: Import Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          CERT_P12: ${{ secrets.DEVELOPER_ID_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/release.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychain -d user -s "$KEYCHAIN"
+
+      - name: Sign (Developer ID)
+        if: env.HAS_SIGNING == 'true'
+        env:
+          SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_IDENTITY }}
+        run: |
+          codesign --force --deep --options runtime --timestamp \
+            --sign "$SIGNING_IDENTITY" "dist/staging/$APP_NAME.app"
+          codesign --verify --strict "dist/staging/$APP_NAME.app"
+
+      - name: Sign (ad-hoc fallback)
+        if: env.HAS_SIGNING != 'true'
+        run: codesign --force --deep -s - "dist/staging/$APP_NAME.app"
+
+      - name: Package DMG
+        run: |
+          ln -s /Applications dist/staging/Applications
+          # hdiutil intermittently reports "Resource busy" on hosted runners.
+          for attempt in 1 2 3; do
+            if hdiutil create -volname "$APP_NAME" -srcfolder dist/staging \
+                 -ov -format UDZO "dist/$APP_NAME.dmg"; then
+              break
+            fi
+            echo "hdiutil attempt $attempt failed; retrying…"
+            sleep 5
+          done
+          test -f "dist/$APP_NAME.dmg"
+
+      - name: Notarize
+        if: env.HAS_SIGNING == 'true'
+        env:
+          APPLE_ID: ${{ secrets.NOTARIZATION_APPLE_ID }}
+          TEAM_ID: ${{ secrets.NOTARIZATION_TEAM_ID }}
+          APP_PASSWORD: ${{ secrets.NOTARIZATION_APP_PASSWORD }}
+        run: |
+          xcrun notarytool submit "dist/$APP_NAME.dmg" \
+            --apple-id "$APPLE_ID" --team-id "$TEAM_ID" --password "$APP_PASSWORD" --wait
+          xcrun stapler staple "dist/$APP_NAME.dmg"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
+          # v1.1.0-beta.1 style tags publish as pre-releases automatically.
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            > **Note for unsigned builds**: if macOS blocks the first launch,
+            > approve it under **System Settings → Privacy & Security → Open Anyway**,
+            > or run `xattr -d com.apple.quarantine "/Applications/vLLM Metal Desktop.app"`.

@@ -18,7 +18,7 @@ struct ServerView: View {
                 .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("Server")
+        .navigationTitle("vLLM Server")
         .toolbar {
             Button { showFlags = true } label: {
                 Image(systemName: "gearshape")

@@ -83,8 +83,12 @@ public enum NetworkAddress {
             guard let sa = interface.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET) else { continue }
             let name = String(cString: interface.ifa_name)
             let sin = UnsafeRawPointer(sa).assumingMemoryBound(to: sockaddr_in.self).pointee
-            guard let cString = inet_ntoa(sin.sin_addr) else { continue }
-            let ip = String(cString: cString)
+            // inet_ntop, not inet_ntoa: the latter returns a shared static
+            // buffer and this runs from arbitrary concurrent contexts.
+            var addr = sin.sin_addr
+            var buffer = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            guard inet_ntop(AF_INET, &addr, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil else { continue }
+            let ip = String(cString: buffer)
             guard ip != "127.0.0.1" else { continue }
             guard includingLinkLocal || !ip.hasPrefix("169.254.") else { continue }
             found.append(Interface(name: name, address: ip))

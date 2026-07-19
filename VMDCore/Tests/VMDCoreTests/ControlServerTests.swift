@@ -53,4 +53,16 @@ struct ControlServerTests {
         )
         #expect(miss.status == 404)
     }
+
+    @Test("declared body length: absent is zero, hostile values reject")
+    func declaredBodyLength() {
+        #expect(ControlServer.declaredBodyLength(nil) == 0)
+        #expect(ControlServer.declaredBodyLength("0") == 0)
+        #expect(ControlServer.declaredBodyLength("1024") == 1024)
+        // Negative lengths would trap in Data.prefix — pre-auth, so this is
+        // an unauthenticated crash if it ever slips through.
+        #expect(ControlServer.declaredBodyLength("-1") == nil)
+        #expect(ControlServer.declaredBodyLength("9999999999") == nil)
+        #expect(ControlServer.declaredBodyLength("abc") == nil)
+    }
 }

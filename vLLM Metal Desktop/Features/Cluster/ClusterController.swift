@@ -454,7 +454,7 @@ final class ClusterController {
                     server.updateService(self?.discoverable == true ? self?.makeService() : nil)
                     return
                 }
-                try? await Task.sleep(for: .milliseconds(50))
+                guard (try? await Task.sleep(for: .milliseconds(50))) != nil else { return }
             }
             self?.lastError = "The control server never obtained a port — other Macs can't reach this one."
         }
@@ -953,7 +953,7 @@ final class ClusterController {
                     startStatusPolling()
                     return
                 }
-                try? await Task.sleep(for: .seconds(1))
+                guard (try? await Task.sleep(for: .seconds(1))) != nil else { break }
             }
             lastError = "The cluster never reached 2 nodes — check the connection and try again."
             await abandonAttempt(with: node, token: token, joined: joined)
@@ -1241,17 +1241,24 @@ final class ClusterController {
             // verify it actually did: launching without the weights would
             // only crash inside the Ray workers later, much less legibly.
             var present = false
+            var unreachable = 0
             for _ in 0..<720 where !present {
-                let (status, body) = (try? await call(
+                if let (status, body) = try? await call(
                     node, method: "GET", path: "/models"
-                )) ?? (0, Data())
-                if status == 200,
-                   let models = try? JSONDecoder().decode([String].self, from: body),
-                   models.contains(model) {
-                    present = true
+                ), status == 200 {
+                    unreachable = 0
+                    let models = (try? JSONDecoder().decode([String].self, from: body)) ?? []
+                    if models.contains(model) {
+                        present = true
+                        continue
+                    }
                 } else {
-                    try? await Task.sleep(for: .seconds(5))
+                    // A dead peer must fail the deploy within a minute, not
+                    // hold the head busy for the full hour.
+                    unreachable += 1
+                    if unreachable >= 12 { break }
                 }
+                guard (try? await Task.sleep(for: .seconds(5))) != nil else { break }
             }
             guard present else {
                 lastError = "\(node.info.name) couldn't download \(model) — check its network and disk space, then deploy again."

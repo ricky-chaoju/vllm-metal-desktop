@@ -97,8 +97,9 @@ public final class ControlServer: @unchecked Sendable {
               var request = parseHead(buffer[..<headerRange.lowerBound]) else { return nil }
 
         // Body phase.
-        let contentLength = request.headers["content-length"].flatMap(Int.init) ?? 0
-        guard contentLength <= 8 * 1024 * 1024 else { return nil }
+        guard let contentLength = declaredBodyLength(request.headers["content-length"]) else {
+            return nil
+        }
         var body = Data(buffer[headerRange.upperBound...])
         while body.count < contentLength {
             guard let chunk = await receive(connection) else { return nil }
@@ -106,6 +107,16 @@ public final class ControlServer: @unchecked Sendable {
         }
         request.body = body.prefix(contentLength)
         return request
+    }
+
+    /// The validated body length a request declares: absent means 0, and a
+    /// malformed, negative, or oversized value rejects the request — this
+    /// runs before authentication, so a hostile header must never reach
+    /// `Data.prefix`'s nonnegative precondition. Internal for unit tests.
+    static func declaredBodyLength(_ header: String?) -> Int? {
+        guard let header else { return 0 }
+        guard let length = Int(header), (0...8 * 1024 * 1024).contains(length) else { return nil }
+        return length
     }
 
     /// Parses the request line + header block (without the terminator).

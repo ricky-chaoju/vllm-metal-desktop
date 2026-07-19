@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Cluster discovery: instances of this app find each other over Bonjour.
+	     Both keys are required for local-network privacy (TN3179). -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_vllm-metal._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>vLLM Metal Desktop discovers other Macs on your network running the app, so you can serve models across them as a cluster.</string>
+</dict>
+</plist>

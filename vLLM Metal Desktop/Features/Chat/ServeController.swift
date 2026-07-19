@@ -91,11 +91,13 @@ final class ServeController {
     // MARK: Lifecycle
 
     /// Starts a deployment for `modelInput`: activates it if already up,
-    /// restarts a parked deployment of that model (keeping its saved
-    /// configuration), or creates a new one. Other deployments keep running.
-    func run() {
+    /// restarts a parked deployment of that model, or creates a new one.
+    /// `flags` overrides the global defaults for this run (cluster deployments
+    /// inject their Ray arguments this way). Other deployments keep running.
+    func run(flags overrideFlags: ServeFlags? = nil) {
         let model = modelInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty else { return }
+        let effectiveFlags = overrideFlags ?? flags
 
         if let existing = deployments.first(where: { $0.model == model && ($0.isRunning || $0.isStarting) }) {
             activeID = existing.id
@@ -103,19 +105,19 @@ final class ServeController {
         }
         if let parked = deployments.first(where: { $0.model == model && $0.isRestartable }) {
             // A fresh deploy request supersedes the parked configuration —
-            // the Deploy sheet just applied the flags the user asked for.
+            // the caller just decided what this run should look like.
             activeID = parked.id
-            parked.start(flags: flags)
+            parked.start(flags: effectiveFlags)
             persistDeployments()
             return
         }
-        guard let port = allocatePort() else { return }
+        guard let port = allocatePort(preferring: effectiveFlags.serverPort) else { return }
 
         let deployment = ServeDeployment(model: model, port: port, bundleID: bundleID)
         wire(deployment)
         deployments.append(deployment)
         activeID = deployment.id
-        deployment.start(flags: flags)
+        deployment.start(flags: effectiveFlags)
         persistDeployments()
     }
 
@@ -193,9 +195,11 @@ final class ServeController {
 
     /// The preferred port if free, else the next free rung on the ladder
     /// (8000, 8001, …) so multiple deployments get predictable addresses.
-    private func allocatePort() -> Int? {
+    /// Ladders from the caller's configured port, not the global default —
+    /// a sheet that says 9000 must not silently produce 8000.
+    private func allocatePort(preferring preferred: Int) -> Int? {
         let taken = Set(deployments.map(\.port))
-        for candidate in flags.serverPort..<(flags.serverPort + 32) {
+        for candidate in preferred..<(preferred + 32) {
             if !taken.contains(candidate), PortFinder.isFree(candidate) {
                 return candidate
             }

@@ -7,6 +7,7 @@ import VMDCore
 struct RootView: View {
     @Environment(AppNavigation.self) private var navigation
     @Environment(ServeController.self) private var serve
+    @Environment(ClusterController.self) private var cluster
     @Environment(\.colorScheme) private var colorScheme
     @State private var imageZoom = ImageZoomModel()
     @State private var updateMonitor = EngineUpdateMonitor()
@@ -93,7 +94,27 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $showOnboarding) { OnboardingSheet() }
+        // Incoming pair requests need a human yes on this Mac — and they can
+        // arrive while any page is showing, so the alert lives on the root.
+        .alert(
+            "Pair with \(cluster.pendingPairRequest?.peerName ?? "another Mac")?",
+            isPresented: Binding(
+                get: { cluster.pendingPairRequest != nil },
+                set: { if !$0 { respondToPair(false) } }
+            )
+        ) {
+            Button("Pair") { respondToPair(true) }
+            Button("Decline", role: .cancel) { respondToPair(false) }
+        } message: {
+            Text("Paired Macs can form a serving cluster together: start engines on each other and share downloaded models.")
+        }
         .onChange(of: colorScheme) { _, scheme in applyDockIcon(for: scheme) }
+    }
+
+    private func respondToPair(_ approved: Bool) {
+        let request = cluster.pendingPairRequest
+        cluster.pendingPairRequest = nil
+        request?.respond(approved)
     }
 
     /// Classic .appiconset files can't carry appearance variants (only the new
@@ -157,6 +178,7 @@ struct RootView: View {
         case .chat: ChatView()
         case .models: ModelsView()
         case .server: ServerView()
+        case .cluster: ClusterView()
         case .engine: EngineView()
         case .hardware: HardwareView()
         case .settings: SettingsView()
@@ -225,6 +247,19 @@ private struct IconRail: View {
                         .lineLimit(1)
                         .fixedSize()
                         .transition(.opacity)
+                    if section == .cluster {
+                        Text("Beta")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(
+                                isSelected ? Color.white.opacity(0.22) : Color.accentColor.opacity(0.18),
+                                in: Capsule()
+                            )
+                            .foregroundStyle(isSelected ? Color.white : Color.accentColor)
+                            .fixedSize()
+                            .transition(.opacity)
+                    }
                     Spacer(minLength: 0)
                 }
             }
@@ -241,7 +276,7 @@ private struct IconRail: View {
         }
         .buttonStyle(.plain)
         .pointingHandCursor()
-        .help(section.title)
+        .help(section == .cluster ? "\(section.title) (Beta)" : section.title)
     }
 }
 
@@ -249,5 +284,6 @@ private struct IconRail: View {
     RootView()
         .environment(AppNavigation())
         .environment(ServeController())
+        .environment(ClusterController())
         .modelContainer(for: [ChatFolder.self, Conversation.self, ChatMessage.self], inMemory: true)
 }

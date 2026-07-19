@@ -135,6 +135,11 @@ public struct ServeFlags: Codable, Sendable, Equatable {
     /// Free-form extra `vllm serve` arguments for power users.
     public var extraArguments: String
 
+    /// Extra environment for `vllm serve`, merged over the Metal defaults —
+    /// how cluster deployments inject `RAY_ADDRESS`/`VLLM_HOST_IP` without a
+    /// parallel launch path. Optional so pre-existing saved flags decode.
+    public var additionalEnvironment: [String: String]?
+
     /// The vLLM convention.
     public static let defaultServerPort = 8000
 
@@ -145,7 +150,8 @@ public struct ServeFlags: Codable, Sendable, Equatable {
         usePagedAttention: Bool = true,
         debugLogging: Bool = false,
         serverPort: Int = ServeFlags.defaultServerPort,
-        extraArguments: String = ""
+        extraArguments: String = "",
+        additionalEnvironment: [String: String]? = nil
     ) {
         self.values = values
         self.memoryFraction = memoryFraction
@@ -154,6 +160,7 @@ public struct ServeFlags: Codable, Sendable, Equatable {
         self.debugLogging = debugLogging
         self.serverPort = serverPort
         self.extraArguments = extraArguments
+        self.additionalEnvironment = additionalEnvironment
     }
 
     /// Tolerant decoding so configurations saved by older app versions (without
@@ -167,6 +174,7 @@ public struct ServeFlags: Codable, Sendable, Equatable {
         debugLogging = try container.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? false
         serverPort = try container.decodeIfPresent(Int.self, forKey: .serverPort) ?? Self.defaultServerPort
         extraArguments = try container.decodeIfPresent(String.self, forKey: .extraArguments) ?? ""
+        additionalEnvironment = try container.decodeIfPresent([String: String].self, forKey: .additionalEnvironment)
     }
 
     /// Builds the `--flag value` list, emitting only values that differ from the
@@ -208,6 +216,7 @@ public struct ServeFlags: Codable, Sendable, Equatable {
         ]
         if !usePagedAttention { env["VLLM_METAL_USE_PAGED_ATTENTION"] = "0" }
         if debugLogging { env["VLLM_METAL_DEBUG"] = "1" }
+        for (key, value) in additionalEnvironment ?? [:] { env[key] = value }
         return env
     }
 }

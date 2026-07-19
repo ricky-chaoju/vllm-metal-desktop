@@ -7,6 +7,7 @@ import VMDCore
 /// model picker + transcript + composer on the right. Conversations persist.
 struct ChatView: View {
     @Environment(ServeController.self) private var serve
+    @Environment(ClusterController.self) private var cluster
     @Environment(AppNavigation.self) private var navigation
     @Environment(\.modelContext) private var context
 
@@ -60,12 +61,14 @@ struct ChatView: View {
         .onAppear { syncThinkingSupport() }
         .onChange(of: serve.activeID) { _, _ in syncThinkingSupport() }
         .onChange(of: serve.servedModelName) { _, _ in syncThinkingSupport() }
+        .onChange(of: clusterTarget?.model) { _, _ in syncThinkingSupport() }
     }
 
     /// Reads the active model's cached chat template and updates what the
     /// Thinking picker may do (resetting a now-impossible forced mode).
     private func syncThinkingSupport() {
-        let model = serve.servedModelName ?? serve.modelInput
+        let model = (clusterTargetSelected ? cluster.chatTarget?.model : nil)
+            ?? serve.servedModelName ?? serve.modelInput
         chat.thinkingSupport = ThinkingParser.templateSupport(LocalModels().chatTemplate(forModelID: model))
         if chat.thinkingSupport != .toggleable {
             chat.thinkingMode = .modelDefault
@@ -75,6 +78,50 @@ struct ChatView: View {
     private var isFailed: Bool {
         if case .failed = serve.status { return true }
         return false
+    }
+
+    // MARK: Chat backend
+    //
+    // Chat talks to either the local serve deployment (the default) or — on
+    // a cluster worker — a deployment running on the head, reached over the
+    // network. One seam here; everything below asks these instead of `serve`.
+
+    /// Whether the user pointed Chat at a cluster deployment. Sticky: while
+    /// this is set, Chat never falls back to the local serve model — if the
+    /// target vanishes (head stopped it), the composer goes quiet instead of
+    /// silently rebinding a conversation to a different model.
+    private var clusterTargetSelected: Bool {
+        cluster.role == .worker && cluster.chatTarget != nil
+    }
+
+    /// The selected cluster deployment, while it's still live. Head Macs
+    /// never use this: their cluster deployments are local.
+    private var clusterTarget: ClusterDeploymentSummary? {
+        guard clusterTargetSelected, let target = cluster.chatTarget else { return nil }
+        return cluster.clusterDeployments.first { $0.id == target.id }
+    }
+
+    private var chatIsReady: Bool {
+        if clusterTargetSelected { return clusterTarget?.state == .running }
+        return serve.isRunning
+    }
+
+    private var chatClient: OpenAIClient? {
+        if clusterTargetSelected {
+            guard let target = clusterTarget, target.state == .running,
+                  let host = cluster.headIP,
+                  let url = URL(string: "http://\(host):\(target.port)") else { return nil }
+            return OpenAIClient(baseURL: url)
+        }
+        return serve.openAIClient
+    }
+
+    /// The model name requests are made with (and whose cached template and
+    /// config gate Thinking/vision — cluster deploys download the model on
+    /// every member, so the local cache answers for remote targets too).
+    private var chatModelName: String? {
+        if clusterTargetSelected { return cluster.chatTarget?.model }
+        return serve.servedModelName
     }
 
     private var messages: [ChatMessage] {
@@ -251,7 +298,15 @@ struct ChatView: View {
 
             // "Running" is redundant next to a picked model — only states that
             // carry information (starting up, failed) get called out.
-            if let active = serve.active, active.isRunning == false {
+            if clusterTargetSelected {
+                let state = clusterTarget?.state
+                if state != .running {
+                    Text(state == .starting ? "Loading on the cluster…" : "Not running")
+                        .scaledFont(.callout)
+                        .foregroundStyle(state == .failed ? .red : .secondary)
+                        .lineLimit(1)
+                }
+            } else if let active = serve.active, active.isRunning == false {
                 Text(serve.statusText)
                     .scaledFont(.callout)
                     .foregroundStyle(isFailed ? .red : .secondary)
@@ -271,9 +326,29 @@ struct ChatView: View {
                     ForEach(serve.runningDeployments) { deployment in
                         Button {
                             serve.activeID = deployment.id
+                            cluster.chatTarget = nil
                         } label: {
                             let title = "\(deployment.servedModelName ?? deployment.model)  ·  :\(deployment.port)"
-                            if deployment.id == serve.active?.id {
+                            if deployment.id == serve.active?.id, clusterTarget == nil {
+                                Label(title, systemImage: "checkmark")
+                            } else {
+                                Text(title)
+                            }
+                        }
+                    }
+                }
+                Divider()
+            }
+            // A worker's cluster deployments run on the head — reachable,
+            // just not local. The head's own appear under Running already.
+            if cluster.role == .worker, !cluster.clusterDeployments.isEmpty {
+                Section("Cluster") {
+                    ForEach(cluster.clusterDeployments) { deployment in
+                        Button {
+                            cluster.chatTarget = deployment
+                        } label: {
+                            let title = "\(deployment.model)  ·  cluster"
+                            if deployment.id == clusterTarget?.id {
                                 Label(title, systemImage: "checkmark")
                             } else {
                                 Text(title)
@@ -304,6 +379,9 @@ struct ChatView: View {
     }
 
     private var activeModelLabel: String {
+        if clusterTargetSelected {
+            return cluster.chatTarget?.model ?? "Cluster model"
+        }
         if let active = serve.active {
             return active.servedModelName ?? active.model
         }
@@ -389,7 +467,8 @@ struct ChatView: View {
 
     /// Whether the running model takes image input (from its cached config).
     private var modelSupportsVision: Bool {
-        let model = serve.servedModelName ?? serve.modelInput
+        let model = (clusterTargetSelected ? cluster.chatTarget?.model : nil)
+            ?? serve.servedModelName ?? serve.modelInput
         guard let config = LocalModels().configJSON(forModelID: model) else { return false }
         return LocalModels.supportsVision(configJSON: config)
     }
@@ -454,7 +533,7 @@ struct ChatView: View {
             }
         }
         if rejectedImages > 0 {
-            let model = serve.servedModelName ?? serve.modelInput
+            let model = chatModelName ?? serve.modelInput
             showAttachmentNotice("\(shortModelName(model)) doesn't support images — try a vision (VL) model")
         }
         return stagedAny
@@ -500,7 +579,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .pointingHandCursor()
-            .disabled(!serve.isRunning)
+            .disabled(!chatIsReady)
             .help(modelSupportsVision
                   ? "Attach images or files"
                   : "Attach files (this model doesn't support images)")
@@ -519,11 +598,11 @@ struct ChatView: View {
                 }
             }
 
-            TextField(serve.isRunning ? "Message…" : "Run a model to chat", text: $chat.input, axis: .vertical)
+            TextField(chatIsReady ? "Message…" : "Run a model to chat", text: $chat.input, axis: .vertical)
                 .textFieldStyle(.plain)
                 .scaledFont(.body)
                 .lineLimit(1...8)
-                .disabled(!serve.isRunning)
+                .disabled(!chatIsReady)
                 .onSubmit {
                     // Shift+Return inserts a line break; plain Return sends.
                     if NSEvent.modifierFlags.contains(.shift) {
@@ -551,12 +630,12 @@ struct ChatView: View {
                     .background(Circle().fill(sendEnabled ? Color.accentColor : Color.gray.opacity(0.4)))
             }
             .buttonStyle(.plain)
-            .disabled(!chat.isStreaming && !(serve.isRunning && chat.canSend))
+            .disabled(!chat.isStreaming && !(chatIsReady && chat.canSend))
         }
     }
 
     private var sendEnabled: Bool {
-        chat.isStreaming || (serve.isRunning && chat.canSend)
+        chat.isStreaming || (chatIsReady && chat.canSend)
     }
 
     private var parametersForm: some View {
@@ -687,17 +766,17 @@ struct ChatView: View {
     }
 
     private func sendMessage() {
-        guard serve.isRunning,
-              let client = serve.openAIClient,
-              let model = serve.servedModelName else { return }
+        guard chatIsReady,
+              let client = chatClient,
+              let model = chatModelName else { return }
         let conversation = selection ?? newChat()
         chat.send(into: conversation, client: client, model: model, context: context)
     }
 
     private func regenerate(_ message: ChatMessage) {
         guard let conversation = selection,
-              let client = serve.openAIClient,
-              let model = serve.servedModelName else { return }
+              let client = chatClient,
+              let model = chatModelName else { return }
         chat.regenerate(message, in: conversation, client: client, model: model, context: context)
     }
 }

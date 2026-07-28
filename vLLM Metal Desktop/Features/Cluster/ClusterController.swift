@@ -10,6 +10,10 @@ private nonisolated struct PairRequestPayload: Codable, Sendable {
     var id: String
     var name: String
     var token: String
+    /// The requester's control port, so the approving Mac can reciprocate
+    /// visibility on networks without discovery. Optional: older builds
+    /// don't send it.
+    var controlPort: Int?
 }
 
 private nonisolated struct PairResponsePayload: Codable, Sendable {
@@ -436,8 +440,22 @@ final class ClusterController {
         }
     }
 
-    private func startControlServer() {
-        guard let server = try? ControlServer(service: discoverable ? makeService() : nil, handler: { [weak self] request in
+    /// The default control port. Stable on purpose: off-LAN setups (EC2
+    /// security groups, manual add-by-IP entries) need an address that
+    /// survives app relaunches. `-VMDControlPort N` overrides; a taken port
+    /// (second instance on one Mac) falls back to an ephemeral one, which
+    /// Bonjour still advertises correctly.
+    static let defaultControlPort: UInt16 = 56070
+
+    private func startControlServer(ephemeral: Bool = false) {
+        let preferred: UInt16?
+        if ephemeral {
+            preferred = nil
+        } else {
+            let configured = UserDefaults.standard.integer(forKey: "VMDControlPort")
+            preferred = (1...65535).contains(configured) ? UInt16(configured) : Self.defaultControlPort
+        }
+        guard let server = try? ControlServer(service: discoverable ? makeService() : nil, preferredPort: preferred, handler: { [weak self] request in
             guard let self else { return .error(500) }
             return await self.handle(request)
         }) else {
@@ -446,10 +464,20 @@ final class ClusterController {
         }
         server.start()
         self.server = server
-        // The port binds async — advertise it once known.
+        // The port binds async — advertise it once accepting.
         Task { @MainActor [weak self] in
             for _ in 0..<100 {
-                if let port = server.port, port > 0 {
+                if server.failed {
+                    if !ephemeral {
+                        // Preferred port taken — an ephemeral one still works
+                        // for discovered/paired peers.
+                        self?.startControlServer(ephemeral: true)
+                    } else {
+                        self?.lastError = "The control server never obtained a port — other Macs can't reach this one."
+                    }
+                    return
+                }
+                if server.ready, let port = server.port, port > 0 {
                     self?.localInfo.controlPort = Int(port)
                     server.updateService(self?.discoverable == true ? self?.makeService() : nil)
                     return
@@ -674,6 +702,7 @@ final class ClusterController {
         if let existing = pairedPeers.first(where: { $0.id == payload.id }),
            request.headers["x-vmd-token"] == existing.token {
             savePeer(PairedPeer(id: payload.id, name: payload.name, token: payload.token))
+            reciprocateVisibility(of: payload, request: request)
             return .json(PairResponsePayload(id: localInfo.id, name: localInfo.name))
         }
 
@@ -683,7 +712,21 @@ final class ClusterController {
         let approved = await requestApproval(peerID: payload.id, peerName: payload.name)
         guard approved else { return .error(403) }
         savePeer(PairedPeer(id: payload.id, name: payload.name, token: payload.token))
+        reciprocateVisibility(of: payload, request: request)
         return .json(PairResponsePayload(id: localInfo.id, name: localInfo.name))
+    }
+
+    /// A pair request that reached us without discovery (manual IP — EC2,
+    /// VPNs) means the requester sees us but we can't see them: learn their
+    /// address from the live connection so both lists agree. Discovered
+    /// peers skip this — Bonjour already lists them.
+    private func reciprocateVisibility(of payload: PairRequestPayload, request: ControlRequest) {
+        guard let host = request.remoteHost,
+              let port = payload.controlPort, (1...65535).contains(port),
+              !nodes.contains(where: { $0.stableID == payload.id }) else { return }
+        Task { @MainActor [weak self] in
+            await self?.addManualNode(address: host, port: port, quiet: true)
+        }
     }
 
     /// Surfaces the request to the UI and waits (max 60 s) for a decision.
@@ -732,19 +775,22 @@ final class ClusterController {
 
     /// Adds a peer by IP — for networks where mDNS can't cross (different
     /// subnets, VPNs, cloud VPCs). Verified reachable before it's kept.
-    func addManualNode(address: String, port: Int) async -> Bool {
-        busy = "Contacting \(address)…"
-        defer { busy = nil }
-        lastError = nil
+    @discardableResult
+    func addManualNode(address: String, port: Int, quiet: Bool = false) async -> Bool {
+        if !quiet {
+            busy = "Contacting \(address)…"
+            lastError = nil
+        }
+        defer { if !quiet { busy = nil } }
         guard let (status, body) = try? await ControlClient.request(
             host: address, port: port, method: "GET", path: "/node", timeout: 5
         ), status == 200,
         let payload = try? JSONDecoder().decode(NodeStatusPayload.self, from: body) else {
-            lastError = "No vLLM Metal Desktop responded at \(address):\(port)."
+            if !quiet { lastError = "No vLLM Metal Desktop responded at \(address):\(port)." }
             return false
         }
         guard payload.info.id != localInfo.id else {
-            lastError = "\(address) is this Mac."
+            if !quiet { lastError = "\(address) is this Mac." }
             return false
         }
         let entry = ManualNode(address: address, port: port)
@@ -830,7 +876,8 @@ final class ClusterController {
         let token = UUID().uuidString
         do {
             let payload = try JSONEncoder().encode(PairRequestPayload(
-                id: localInfo.id, name: localInfo.name, token: token
+                id: localInfo.id, name: localInfo.name, token: token,
+                controlPort: localInfo.controlPort
             ))
             let (status, responseBody) = try await call(
                 node, method: "POST", path: "/pair", token: self.token(for: node),
@@ -971,86 +1018,6 @@ final class ClusterController {
             _ = try? await call(node, method: "POST", path: "/cluster/leave", token: token, timeout: 10)
         }
         _ = try? await ray.stopNode()
-    }
-
-    /// Starts this Mac as a Ray head with no app-driven worker — the head
-    /// address shows in the UI so other Macs (paired or not, even ones this
-    /// Mac can't discover) can join it manually.
-    func startStandaloneHead() async {
-        guard role == .none, busy == nil else { return }
-        lastError = nil
-        busy = "Starting Ray head…"
-        defer { busy = nil }
-        let chosen = preferredInterface.flatMap { name in
-            localInterfaces.first { $0.name == name }?.address
-        }
-        guard let myIP = chosen ?? NetworkAddress.thunderboltBridgeIPv4() ?? NetworkAddress.primaryIPv4() else {
-            lastError = "No usable network interface found."
-            return
-        }
-        _ = try? await ray.stopNode()
-        do {
-            let head = try await ray.startHead(nodeIP: myIP)
-            guard head.didSucceed else {
-                lastError = "Ray head failed: \(head.standardError.suffix(300))"
-                return
-            }
-            clusterStatus = await ray.status()
-            role = .head
-            headIP = myIP
-            clusterPeerID = nil
-            persistClusterState()
-            startStatusPolling()
-        } catch {
-            lastError = error.localizedDescription
-        }
-    }
-
-    /// Joins a Ray head by address ("10.0.0.1" or "10.0.0.1:6379") — the
-    /// escape hatch when the head can't reach us over the control channel
-    /// (different subnets, no discovery). Deployment lists and logs still
-    /// need the head paired; plain Ray membership works without it.
-    func joinCluster(address raw: String) async {
-        guard role == .none, busy == nil else { return }
-        lastError = nil
-        let trimmed = raw.trimmingCharacters(in: .whitespaces)
-        let parts = trimmed.split(separator: ":")
-        let host = String(parts.first ?? "")
-        guard !host.isEmpty else {
-            lastError = "Enter the head's address (like 10.0.0.1:\(RayCluster.gcsPort))."
-            return
-        }
-        let port: String
-        if parts.count > 1 {
-            guard let numeric = Int(parts[1]), (1...65535).contains(numeric) else {
-                lastError = "\(parts[1]) isn't a valid port."
-                return
-            }
-            port = String(numeric)
-        } else {
-            port = String(RayCluster.gcsPort)
-        }
-        busy = "Joining \(host)…"
-        defer { busy = nil }
-        guard let myIP = NetworkAddress.interfaceIPv4(reaching: host) ?? NetworkAddress.primaryIPv4() else {
-            lastError = "No usable network interface found."
-            return
-        }
-        _ = try? await ray.stopNode()
-        do {
-            let result = try await ray.join(headAddress: "\(host):\(port)", nodeIP: myIP)
-            guard result.didSucceed else {
-                lastError = "Join failed: \(result.standardError.suffix(300))"
-                return
-            }
-            role = .worker
-            headIP = host
-            clusterPeerID = nodes.first { $0.info.addresses.contains(host) }?.stableID
-            persistClusterState()
-            startStatusPolling()
-        } catch {
-            lastError = error.localizedDescription
-        }
     }
 
     /// Tears the cluster down on both ends.

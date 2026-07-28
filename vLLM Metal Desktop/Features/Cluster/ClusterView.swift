@@ -12,8 +12,6 @@ struct ClusterView: View {
     @State private var showDeploySheet = false
     @State private var expandedNodeID: String?
     @State private var showManualAdd = false
-    @State private var showJoinPopover = false
-    @State private var joinAddress = ""
     @State private var selectedDeploymentID: String?
     @State private var showConfigSheet = false
     @State private var manualAddress = ""
@@ -277,32 +275,6 @@ struct ClusterView: View {
                 .disabled(cluster.role != .none)
             }
 
-            // Manual Ray membership — for setups discovery can't cover (a
-            // head on another subnet, or forming one before the peer pairs).
-            if cluster.role == .none, cluster.rayVersion != nil {
-                HStack(spacing: Theme.Spacing.s) {
-                    Label("Ray cluster", systemImage: "point.3.connected.trianglepath.dotted")
-                        .scaledFont(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Start Head") {
-                        Task { await cluster.startStandaloneHead() }
-                    }
-                    .controlSize(.small)
-                    .fixedSize()
-                    .disabled(cluster.busy != nil)
-                    .help("Start a Ray head here — other Macs join it by address")
-                    Button("Join…") { showJoinPopover = true }
-                        .controlSize(.small)
-                        .fixedSize()
-                        .disabled(cluster.busy != nil)
-                        .help("Join a Ray head by address")
-                        .popover(isPresented: $showJoinPopover, arrowEdge: .bottom) {
-                            joinForm
-                        }
-                }
-            }
-
             // pip's live output while Ray installs/updates — show the work,
             // not just a spinner.
             if !cluster.installLogs.isEmpty {
@@ -411,14 +383,6 @@ struct ClusterView: View {
                         .foregroundStyle(.secondary)
                         .help("Copy the head address")
                     }
-                }
-                if cluster.role == .head, cluster.clusterPeerID == nil {
-                    rowDivider
-                    Text("Waiting for workers — other Macs join with this address from their Cluster page.")
-                        .scaledFont(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 8)
                 }
             }
             if NetworkAddress.thunderboltBridgeIPv4() == nil {
@@ -868,30 +832,6 @@ struct ClusterView: View {
             .fixedSize()
             .disabled(cluster.busy != nil)
         }
-    }
-
-    private var joinForm: some View {
-        VStack(alignment: .leading, spacing: Theme.Spacing.m) {
-            Text("Join a Ray Head")
-                .scaledFont(.headline)
-            Text("Enter the head address shown on the other Mac's Cluster page. Port defaults to \(RayCluster.gcsPort).")
-                .scaledFont(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 260, alignment: .leading)
-            TextField("10.0.0.1:\(RayCluster.gcsPort)", text: $joinAddress)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: 260)
-            HStack {
-                Spacer()
-                Button("Join") {
-                    showJoinPopover = false
-                    Task { await cluster.joinCluster(address: joinAddress) }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(joinAddress.trimmingCharacters(in: .whitespaces).isEmpty || cluster.busy != nil)
-            }
-        }
-        .padding(Theme.Spacing.m)
     }
 
     private var manualAddForm: some View {

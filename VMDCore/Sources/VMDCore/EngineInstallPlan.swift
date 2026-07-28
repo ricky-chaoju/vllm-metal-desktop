@@ -11,7 +11,7 @@ public struct EngineInstallConfig: Sendable, Equatable {
     public var pythonVersion: String
 
     public init(
-        vllmVersion: String = "0.25.1",
+        vllmVersion: String = "0.26.0",
         uvVersion: String = "0.9.18",
         pythonVersion: String = "3.12"
     ) {
@@ -20,8 +20,13 @@ public struct EngineInstallConfig: Sendable, Equatable {
         self.pythonVersion = pythonVersion
     }
 
-    public var vllmTarballURL: URL {
-        URL(string: "https://github.com/vllm-project/vllm/releases/download/v\(vllmVersion)/vllm-\(vllmVersion).tar.gz")!
+    /// The prebuilt macOS arm64 vLLM core wheel attached to vLLM's own
+    /// release (v0.26.0 was the first to ship one — the tag install.sh pins
+    /// by full URL because no index serves it). The "+cpu" local version
+    /// must be percent-encoded in the asset name.
+    public var vllmWheelURL: URL {
+        let cp = "cp" + pythonVersion.replacingOccurrences(of: ".", with: "")
+        return URL(string: "https://github.com/vllm-project/vllm/releases/download/v\(vllmVersion)/vllm-\(vllmVersion)%2Bcpu-\(cp)-\(cp)-macosx_11_0_arm64.whl")!
     }
 
     public var uvInstallerURL: URL {
@@ -48,11 +53,10 @@ public struct InstallStep: Sendable, Identifiable {
 
 /// Builds the ordered command sequence that provisions `~/.venv-vllm-metal`.
 ///
-/// This faithfully mirrors `install.sh` — including that the prebuilt-wheel path
-/// *still* compiles vLLM core from source (`CXXFLAGS=-Wno-parentheses uv pip
-/// install .`, install.sh:214). It is pure and unit-tested for correct command
-/// construction; a real end-to-end run (a documented blocking unknown,
-/// docs/PLAN.md §9) is needed to validate timing/footprint.
+/// This faithfully mirrors `install.sh`, which since 2026-07 installs vLLM
+/// core from a prebuilt macOS wheel — the from-source compile (and its
+/// several-minute build step) is gone. Pure and unit-tested for correct
+/// command construction; the run itself is integration.
 public enum EngineInstallPlan {
     /// Environment for uv invocations: targets the managed venv and puts uv on PATH.
     public static func installEnvironment(paths: EnginePaths, uvDirectory: URL) -> [String: String] {
@@ -113,27 +117,15 @@ public enum EngineInstallPlan {
             )
         )
 
-        // Mirrors install.sh:201-214 — download the sdist, install CPU deps, then
-        // compile vLLM core from source into the venv.
-        let vllmScript = """
-        set -euo pipefail
-        tmp="$(mktemp -d)"
-        trap 'rm -rf "$tmp"' EXIT
-        echo "Downloading vLLM \(config.vllmVersion)…"
-        curl -fSL '\(config.vllmTarballURL.absoluteString)' -o "$tmp/vllm.tar.gz"
-        tar -xzf "$tmp/vllm.tar.gz" -C "$tmp"
-        cd "$tmp/vllm-\(config.vllmVersion)/"
-        echo "Installing CPU dependencies…"
-        '\(uv.path)' pip install -r requirements/cpu.txt --index-strategy unsafe-best-match
-        echo "Compiling vLLM core (slow step, several minutes)…"
-        CXXFLAGS="-Wno-parentheses" '\(uv.path)' pip install .
-        """
+        // Mirrors install.sh's install_vllm — the prebuilt wheel; its own
+        // metadata pulls torch et al. from PyPI (still gigabytes, so the
+        // step stays marked long-running).
         let installVLLM = InstallStep(
             id: "install-vllm",
-            title: "Download & build vLLM \(config.vllmVersion)",
+            title: "Install vLLM \(config.vllmVersion) (prebuilt wheel)",
             launch: ProcessLaunch(
-                executableURL: URL(filePath: "/bin/sh"),
-                arguments: ["-c", vllmScript],
+                executableURL: uv,
+                arguments: ["pip", "install", config.vllmWheelURL.absoluteString],
                 environment: env
             ),
             isLongRunning: true

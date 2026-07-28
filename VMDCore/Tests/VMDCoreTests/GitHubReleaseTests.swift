@@ -209,15 +209,22 @@ struct GitHubReleaseTests {
         #expect(entries[3].title == "SGLang Deploy Guide")
     }
 
-    @Test("parses the pinned vLLM base out of install.sh")
+    @Test("parses the pinned vLLM base out of install.sh, old and new pin styles")
     func vllmBaseParsing() {
-        let script = """
+        // Pre-2026-07 releases pinned inside install_vllm().
+        let legacy = """
         install_vllm() {
           local vllm_v="0.25.1"
           local url_base="https://github.com/vllm-project/vllm/releases/download"
         }
         """
-        #expect(GitHubReleaseClient.parseVLLMBase(fromInstallScript: script) == EngineVersion("0.25.1"))
+        #expect(GitHubReleaseClient.parseVLLMBase(fromInstallScript: legacy) == EngineVersion("0.25.1"))
+        // Wheel-era install.sh pins at the top by full URL.
+        let wheelEra = """
+        VLLM_VERSION="0.26.0"
+        VLLM_WHEEL_URL="https://github.com/vllm-project/vllm/releases/download/v${VLLM_VERSION}/vllm-${VLLM_VERSION}%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl"
+        """
+        #expect(GitHubReleaseClient.parseVLLMBase(fromInstallScript: wheelEra) == EngineVersion("0.26.0"))
         #expect(GitHubReleaseClient.parseVLLMBase(fromInstallScript: "no pin here") == nil)
     }
 

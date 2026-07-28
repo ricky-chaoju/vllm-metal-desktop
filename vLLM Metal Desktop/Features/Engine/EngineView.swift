@@ -49,10 +49,16 @@ struct EngineView: View {
                     updateMonitor?.reconcile(installed: vm.installedVersion, latest: vm.latestRelease?.version)
                 }
             } label: {
-                Image(systemName: "arrow.clockwise")
+                // Feedback that the click did something — the check is fast
+                // and often changes nothing visible on the page.
+                if vm.isCheckingUpdates || vm.isCheckingPreflight {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "arrow.clockwise")
+                }
             }
             .help("Re-run checks and refresh releases")
-            .disabled(vm.isBusy)
+            .disabled(vm.isBusy || vm.isCheckingUpdates || vm.isCheckingPreflight)
         }
     }
 

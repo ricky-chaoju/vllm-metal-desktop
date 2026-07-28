@@ -11,9 +11,10 @@ struct EngineInstallPlanTests {
 
     @Test("config derives the documented download URLs")
     func urls() {
-        #expect(config.vllmVersion == "0.25.1")
-        #expect(config.vllmTarballURL.absoluteString
-            == "https://github.com/vllm-project/vllm/releases/download/v0.25.1/vllm-0.25.1.tar.gz")
+        #expect(config.vllmVersion == "0.26.0")
+        // The "+cpu" local version is percent-encoded in the asset name.
+        #expect(config.vllmWheelURL.absoluteString
+            == "https://github.com/vllm-project/vllm/releases/download/v0.26.0/vllm-0.26.0%2Bcpu-cp312-cp312-macosx_11_0_arm64.whl")
         #expect(config.uvInstallerURL.absoluteString == "https://astral.sh/uv/0.9.18/install.sh")
     }
 
@@ -49,18 +50,12 @@ struct EngineInstallPlanTests {
         #expect(code.contains("arm64"))
     }
 
-    @Test("vLLM step mirrors install.sh (tarball, cpu reqs, explicit dir, source compile)")
+    @Test("vLLM step mirrors install.sh (prebuilt core wheel, no source compile)")
     func vllmStep() {
         let step = EngineInstallPlan.steps(config: config, paths: paths, uv: uv, wheelURL: wheel)[2]
-        #expect(step.launch.executableURL.path == "/bin/sh")
-        let script = step.launch.arguments.last ?? ""
-        #expect(script.contains(config.vllmTarballURL.absoluteString))
-        #expect(script.contains("requirements/cpu.txt"))
-        #expect(script.contains("--index-strategy unsafe-best-match"))
-        #expect(script.contains("CXXFLAGS=\"-Wno-parentheses\""))
-        #expect(script.contains("pip install ."))
-        // Explicit, deterministic extraction dir (no ambiguous glob).
-        #expect(script.contains("cd \"$tmp/vllm-0.25.1/\""))
+        #expect(step.launch.executableURL == uv)
+        #expect(step.launch.arguments == ["pip", "install", config.vllmWheelURL.absoluteString])
+        #expect(step.isLongRunning)
     }
 
     @Test("wheel step force-reinstalls the resolved wheel url")

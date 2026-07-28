@@ -13,12 +13,16 @@ public struct ControlRequest: Sendable {
     public var path: String
     public var headers: [String: String]
     public var body: Data
+    /// The caller's IP as seen on the connection — how a Mac paired via
+    /// manual IP learns its peer's address without discovery.
+    public var remoteHost: String?
 
-    public init(method: String, path: String, headers: [String: String] = [:], body: Data = Data()) {
+    public init(method: String, path: String, headers: [String: String] = [:], body: Data = Data(), remoteHost: String? = nil) {
         self.method = method
         self.path = path
         self.headers = headers
         self.body = body
+        self.remoteHost = remoteHost
     }
 }
 
@@ -48,16 +52,36 @@ public final class ControlServer: @unchecked Sendable {
 
     /// The bound port (available after `start`).
     public var port: UInt16? { listener.port?.rawValue }
+    /// True once the listener is accepting connections. A fixed-port
+    /// listener reports its port before binding — wait for this.
+    public private(set) var ready = false
+    /// True once the listener failed — e.g. the preferred port is already
+    /// taken (a second app instance); the owner retries with an ephemeral
+    /// port.
+    public private(set) var failed = false
 
     /// `service` is registered on the same listener so discovery and control
-    /// share one port.
-    public init(service: NWListener.Service?, handler: @escaping Handler) throws {
-        listener = try NWListener(using: .tcp)
+    /// share one port. `preferredPort` requests a stable port — off-LAN
+    /// setups (EC2 security groups, manual entries) need an address that
+    /// survives relaunches; nil binds an ephemeral one.
+    public init(service: NWListener.Service?, preferredPort: UInt16? = nil, handler: @escaping Handler) throws {
+        if let preferredPort, let fixed = NWEndpoint.Port(rawValue: preferredPort) {
+            listener = try NWListener(using: .tcp, on: fixed)
+        } else {
+            listener = try NWListener(using: .tcp)
+        }
         listener.service = service
         self.handler = handler
     }
 
     public func start(queue: DispatchQueue = .main) {
+        listener.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready: self?.ready = true
+            case .failed: self?.failed = true
+            default: break
+            }
+        }
         listener.newConnectionHandler = { [handler] connection in
             Task { await Self.serve(connection, on: queue, handler: handler) }
         }
@@ -76,10 +100,11 @@ public final class ControlServer: @unchecked Sendable {
 
     private static func serve(_ connection: NWConnection, on queue: DispatchQueue, handler: Handler) async {
         connection.start(queue: queue)
-        guard let request = await readRequest(connection) else {
+        guard var request = await readRequest(connection) else {
             connection.cancel()
             return
         }
+        request.remoteHost = remoteHost(of: connection)
         let response = await handler(request)
         await write(response, to: connection)
         connection.cancel()
@@ -107,6 +132,20 @@ public final class ControlServer: @unchecked Sendable {
         }
         request.body = body.prefix(contentLength)
         return request
+    }
+
+    /// The dotted/colon-form address of the connection's remote end.
+    private static func remoteHost(of connection: NWConnection) -> String? {
+        guard case .hostPort(let host, _) = connection.endpoint else { return nil }
+        let text: String
+        switch host {
+        case .ipv4(let address): text = "\(address)"
+        case .ipv6(let address): text = "\(address)"
+        case .name(let name, _): text = name
+        @unknown default: return nil
+        }
+        // Scoped addresses carry an interface suffix peers can't dial.
+        return text.split(separator: "%").first.map(String.init)
     }
 
     /// The validated body length a request declares: absent means 0, and a

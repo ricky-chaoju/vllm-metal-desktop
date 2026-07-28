@@ -240,15 +240,21 @@ public struct GitHubReleaseClient: Sendable {
     }
 
     /// Extracts the pinned base version from install.sh content (pure).
+    /// Matches both the current pin (`VLLM_VERSION="0.26.0"`) and the one
+    /// older releases used (`vllm_v="0.25.1"`) — updates can target either
+    /// era's release tags.
     public static func parseVLLMBase(fromInstallScript script: String) -> EngineVersion? {
-        guard let regex = try? NSRegularExpression(pattern: #"vllm_v="([0-9][0-9.]*)""#),
+        guard let regex = try? NSRegularExpression(pattern: #"(?:VLLM_VERSION|vllm_v)="([0-9][0-9.]*)""#),
               let match = regex.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)),
               let range = Range(match.range(at: 1), in: script) else { return nil }
         return EngineVersion(String(script[range]))
     }
 
     private func get(_ url: URL) async throws -> Data {
-        var request = URLRequest(url: url)
+        // Always hit the network: responses carry max-age=60, and upstream
+        // cuts a release per merge — a cached minute hides exactly the build
+        // the user is refreshing for.
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("vLLM-Metal-Desktop", forHTTPHeaderField: "User-Agent")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")

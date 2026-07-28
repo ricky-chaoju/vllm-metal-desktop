@@ -211,10 +211,10 @@ final class EngineViewModel {
         nextLogID = 0
         phase = .running(stepTitle: "Starting…", index: 0, total: 1)
 
-        // The wheel is a thin layer over a compiled vLLM core. Resolve the base
-        // this release was built against; if it differs from what's compiled in
-        // the venv, a wheel swap would leave the old core running — escalate to
-        // a full rebuild against the right base.
+        // The wheel is a thin layer over the vLLM core. Resolve the base this
+        // release targets; if it differs from what's in the venv, a wheel swap
+        // would leave the old core running — escalate to a fresh install
+        // against the right base (cheap now: the core is a prebuilt wheel).
         var mode = mode
         var config = EngineInstallConfig()
         let requiredBase = try? await releaseClient.fetchRequiredVLLMBase(tag: release.tag)
@@ -225,7 +225,7 @@ final class EngineViewModel {
         if mode == .update {
             let core = await installed.installedCoreVersion()
             if EngineInstaller.needsCoreRebuild(requiredBase: requiredBase, installedCore: core) {
-                appendLog("Installed vLLM core is \(core?.description ?? "unknown") — rebuilding the core, a wheel-only update would keep the old base.")
+                appendLog("Installed vLLM core is \(core?.description ?? "unknown") — reinstalling the core, a wheel-only update would keep the old base.")
                 mode = .fresh
             }
         }

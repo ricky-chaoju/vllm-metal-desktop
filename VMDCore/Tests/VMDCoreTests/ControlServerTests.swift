@@ -27,6 +27,10 @@ struct ControlServerTests {
             guard request.method == "POST", request.path == "/echo" else {
                 return .error(404)
             }
+            // Handlers see who called — loopback names itself.
+            guard request.remoteHost == "127.0.0.1" else {
+                return .error(500)
+            }
             return ControlResponse(status: 200, body: request.body)
         }
         server.start(queue: DispatchQueue(label: "test-control"))
@@ -64,5 +68,28 @@ struct ControlServerTests {
         #expect(ControlServer.declaredBodyLength("-1") == nil)
         #expect(ControlServer.declaredBodyLength("9999999999") == nil)
         #expect(ControlServer.declaredBodyLength("abc") == nil)
+    }
+
+    @Test("a taken preferred port reports failure instead of hanging")
+    func preferredPortConflict() async throws {
+        let first = try ControlServer(service: nil) { _ in .error(404) }
+        first.start()
+        var port: UInt16?
+        for _ in 0..<500 {
+            if first.ready, let bound = first.port, bound > 0 { port = bound; break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let taken = try #require(port)
+
+        let second = try ControlServer(service: nil, preferredPort: taken) { _ in .error(404) }
+        second.start()
+        var failed = false
+        for _ in 0..<500 {
+            if second.failed { failed = true; break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(failed)
+        first.stop()
+        second.stop()
     }
 }

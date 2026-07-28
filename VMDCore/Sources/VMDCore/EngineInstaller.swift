@@ -25,8 +25,8 @@ public struct EngineInstaller: Sendable {
         self.config = config
     }
 
-    /// A fresh install (re)creates the venv and compiles vLLM core; an update
-    /// just installs the new wheel in place (no recompile) — docs/PLAN.md §4.
+    /// A fresh install (re)creates the venv and installs the vLLM core wheel;
+    /// an update just swaps the vllm-metal wheel in place — docs/PLAN.md §4.
     public enum InstallMode: Sendable {
         case fresh
         case update

@@ -9,6 +9,7 @@ struct EngineView: View {
     @Environment(ServeController.self) private var serve
     @Environment(\.openURL) private var openURL
     @State private var showUninstallConfirm = false
+    @State private var copiedRemedy = false
     // Optional: absent in previews. Kept in sync so the window-toolbar badge
     // reflects this page's fresher knowledge (checks and finished installs).
     @Environment(EngineUpdateMonitor.self) private var updateMonitor: EngineUpdateMonitor?
@@ -287,9 +288,29 @@ struct EngineView: View {
                     ProgressView(value: Double(index), total: Double(max(total, 1)))
                 }
             case .failed(let message):
-                Label(message, systemImage: "xmark.octagon.fill")
-                    .foregroundStyle(.red)
-                    .scaledFont(.callout)
+                VStack(alignment: .leading, spacing: Theme.Spacing.s) {
+                    Label(message, systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                        .scaledFont(.callout)
+                    if let remedy = vm.failureRemedy {
+                        HStack(alignment: .firstTextBaseline, spacing: Theme.Spacing.s) {
+                            Text(verbatim: remedy)
+                                .scaledFont(.caption, design: .monospaced)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            Spacer(minLength: Theme.Spacing.s)
+                            Button {
+                                Pasteboard.copy(remedy)
+                                copiedRemedy = true
+                                Task { try? await Task.sleep(for: .seconds(1.2)); copiedRemedy = false }
+                            } label: {
+                                Label(copiedRemedy ? "Copied" : "Copy",
+                                      systemImage: copiedRemedy ? "checkmark" : "doc.on.doc")
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
             case .completed:
                 Label("Engine installed.", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)

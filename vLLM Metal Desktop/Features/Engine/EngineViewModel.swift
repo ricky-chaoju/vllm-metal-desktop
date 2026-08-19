@@ -45,6 +45,10 @@ final class EngineViewModel {
     var selectedTag: String?
     var phase: InstallPhase = .idle
     var logLines: [LogLine] = []
+    /// A command the user has to run themselves to clear a failure the app
+    /// can't fix — removing another user's files needs root. Shown, and made
+    /// copyable, alongside the failure.
+    var failureRemedy: String?
 
     private var nextLogID = 0
     private var isRunningInstall = false
@@ -179,6 +183,7 @@ final class EngineViewModel {
             installedCoreVersion = nil
             phase = .idle
             logLines.removeAll()
+            failureRemedy = nil
             UserDefaults.standard.set(false, forKey: "vmdOnboardingDone")
         } catch {
             phase = .failed("Couldn't uninstall: \(error.localizedDescription)")
@@ -209,6 +214,7 @@ final class EngineViewModel {
 
         logLines.removeAll()
         nextLogID = 0
+        failureRemedy = nil
         phase = .running(stepTitle: "Starting…", index: 0, total: 1)
 
         // The wheel is a thin layer over the vLLM core. Resolve the base this
@@ -257,12 +263,33 @@ final class EngineViewModel {
             case .stepFinished:
                 break
             case .failed(let stepID, let code):
-                phase = .failed("Step “\(stepID)” failed (exit code \(code)). See the log below.")
+                let failure = diagnoseFailure(stepID: stepID, code: code)
+                failureRemedy = failure.remedy
+                phase = .failed(failure.message)
             case .completed:
                 phase = .completed
                 await loadInstalledVersion()
             }
         }
+    }
+
+    /// Turns a failed step into something the user can act on, plus the command
+    /// to run when there is one. Only one failure gets special treatment,
+    /// because only one is both common and unactionable as reported: uv cannot
+    /// replace a venv holding a directory that isn't ours, and says so in terms
+    /// of a path the user never chose. Retrying can never clear it.
+    private func diagnoseFailure(stepID: String, code: Int32) -> (message: String, remedy: String?) {
+        let output = logLines.suffix(40).map(\.text).joined(separator: "\n")
+        guard VenvObstruction.isVenvRemovalDenied(stepID: stepID, output: output),
+              let remedy = VenvObstruction(paths: paths).removalCommand() else {
+            return ("Step “\(stepID)” failed (exit code \(code)). See the log below.", nil)
+        }
+        let message = """
+        \(paths.venvRoot.path) can't be replaced: a directory inside it isn't writable by you, \
+        which is what running the engine's Python under sudo leaves behind. Clear it in Terminal, \
+        then install again.
+        """
+        return (message, remedy)
     }
 
     private var currentTotal: Int {

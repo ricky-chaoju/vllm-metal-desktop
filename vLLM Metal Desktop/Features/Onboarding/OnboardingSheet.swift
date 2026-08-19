@@ -78,7 +78,7 @@ struct OnboardingSheet: View {
             }
             .padding(.horizontal, 28)
 
-            // Live install output — the compile takes minutes; show the work.
+            // Live install output — the downloads take minutes; show the work.
             if engine.isBusy || !engine.logLines.isEmpty {
                 installLog
                     .padding(.horizontal, 28)
@@ -141,7 +141,7 @@ struct OnboardingSheet: View {
         if engine.hasWorkingEngine { return "Installed ✓" }
         if case .failed(let message) = engine.phase { return message }
         if case .running(let step, _, _) = engine.phase { return step }
-        return "Downloads and compiles the vllm-metal engine (a few minutes)."
+        return "Downloads the vllm-metal engine and its dependencies (a few minutes)."
     }
 
     private var modelSubtitle: String {

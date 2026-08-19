@@ -24,7 +24,7 @@ SwiftUI app built for the Mac.
 
 - Apple Silicon Mac (arm64)
 - macOS 14 or later
-- Xcode Command Line Tools (for the engine install)
+- Xcode Command Line Tools (the engine install resolves a git-pinned dependency)
 
 ## Install
 

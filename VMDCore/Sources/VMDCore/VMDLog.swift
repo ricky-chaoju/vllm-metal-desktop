@@ -9,7 +9,7 @@ public enum VMDLog {
     /// Matches the app bundle identifier.
     public static let subsystem = "com.infinirc.vllm-metal-desktop"
 
-    /// Engine provisioning: preflight, uv/venv, downloads, compilation.
+    /// Engine provisioning: preflight, uv/venv, wheel downloads.
     public static let installer = Logger(subsystem: subsystem, category: "installer")
     /// Engine lifecycle: start/stop/recover, health, process supervision.
     public static let engine = Logger(subsystem: subsystem, category: "engine")

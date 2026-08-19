@@ -34,7 +34,7 @@ final class EngineViewModel {
     var preflight: [PreflightItem] = []
     var isCheckingPreflight = false
     var installedVersion: EngineVersion?
-    /// The compiled vLLM base (`vllm.__version__`) — what `vllm serve` banners show.
+    /// The installed vLLM core (`vllm.__version__`) — what `vllm serve` banners show.
     var installedCoreVersion: EngineVersion?
     var releases: [ReleaseInfo] = []
     var isCheckingUpdates = false
@@ -45,6 +45,10 @@ final class EngineViewModel {
     var selectedTag: String?
     var phase: InstallPhase = .idle
     var logLines: [LogLine] = []
+    /// A command the user has to run themselves to clear a failure the app
+    /// can't fix — removing another user's files needs root. Shown, and made
+    /// copyable, alongside the failure.
+    var failureRemedy: String?
 
     private var nextLogID = 0
     private var isRunningInstall = false
@@ -162,12 +166,12 @@ final class EngineViewModel {
     /// provision otherwise. A half-provisioned venv (failed first install) must go
     /// through `.fresh`; a wheel swap into it can never succeed.
     func installOrUpdate() async {
-        await runInstall(mode: hasWorkingEngine ? .update : .fresh)
+        await runInstall(forceFresh: !hasWorkingEngine)
     }
 
-    /// Nuke-and-rebuild: recreate the venv and recompile vLLM core from scratch.
+    /// Nuke-and-rebuild: recreate the venv and reinstall the vLLM core from scratch.
     func rebuild() async {
-        await runInstall(mode: .fresh)
+        await runInstall(forceFresh: true)
     }
 
     /// Removes the venv (weights in the HF cache stay). Re-arms onboarding so a
@@ -179,6 +183,7 @@ final class EngineViewModel {
             installedCoreVersion = nil
             phase = .idle
             logLines.removeAll()
+            failureRemedy = nil
             UserDefaults.standard.set(false, forKey: "vmdOnboardingDone")
         } catch {
             phase = .failed("Couldn't uninstall: \(error.localizedDescription)")
@@ -186,7 +191,7 @@ final class EngineViewModel {
         await runPreflight()
     }
 
-    private func runInstall(mode: EngineInstaller.InstallMode) async {
+    private func runInstall(forceFresh: Bool) async {
         guard !isRunningInstall else { return }
         isRunningInstall = true
         defer { isRunningInstall = false }
@@ -209,27 +214,43 @@ final class EngineViewModel {
 
         logLines.removeAll()
         nextLogID = 0
+        failureRemedy = nil
         phase = .running(stepTitle: "Starting…", index: 0, total: 1)
 
         // The wheel is a thin layer over the vLLM core. Resolve the base this
         // release targets; if it differs from what's in the venv, a wheel swap
         // would leave the old core running — escalate to a fresh install
         // against the right base (cheap now: the core is a prebuilt wheel).
-        var mode = mode
-        var config = EngineInstallConfig()
         let requiredBase = try? await releaseClient.fetchRequiredVLLMBase(tag: release.tag)
         if let requiredBase {
-            config.vllmVersion = requiredBase.description
             appendLog("Release \(release.tag) targets vLLM core \(requiredBase).")
         }
-        if mode == .update {
+
+        var wantsFresh = forceFresh
+        if !wantsFresh {
             let core = await installed.installedCoreVersion()
             if EngineInstaller.needsCoreRebuild(requiredBase: requiredBase, installedCore: core) {
                 appendLog("Installed vLLM core is \(core?.description ?? "unknown") — reinstalling the core, a wheel-only update would keep the old base.")
-                mode = .fresh
+                wantsFresh = true
             }
         }
-        let installer = EngineInstaller(paths: paths, config: config)
+
+        let mode: EngineInstaller.InstallMode
+        if wantsFresh {
+            // Only that release's install.sh knows which core belongs with this
+            // wheel, and it moves whenever upstream bumps vLLM. Installing a
+            // guessed core yields a venv that imports fine and then fails at
+            // serve time, so stop here instead.
+            guard let requiredBase else {
+                phase = .failed("Couldn't read which vLLM core \(release.tag) needs — check your connection, then try again.")
+                return
+            }
+            mode = .fresh(vllmCoreVersion: requiredBase.description)
+        } else {
+            mode = .update
+        }
+
+        let installer = EngineInstaller(paths: paths)
 
         for await event in installer.install(wheelURL: wheelURL, mode: mode) {
             switch event {
@@ -242,12 +263,33 @@ final class EngineViewModel {
             case .stepFinished:
                 break
             case .failed(let stepID, let code):
-                phase = .failed("Step “\(stepID)” failed (exit code \(code)). See the log below.")
+                let failure = diagnoseFailure(stepID: stepID, code: code)
+                failureRemedy = failure.remedy
+                phase = .failed(failure.message)
             case .completed:
                 phase = .completed
                 await loadInstalledVersion()
             }
         }
+    }
+
+    /// Turns a failed step into something the user can act on, plus the command
+    /// to run when there is one. Only one failure gets special treatment,
+    /// because only one is both common and unactionable as reported: uv cannot
+    /// replace a venv holding a directory that isn't ours, and says so in terms
+    /// of a path the user never chose. Retrying can never clear it.
+    private func diagnoseFailure(stepID: String, code: Int32) -> (message: String, remedy: String?) {
+        let output = logLines.suffix(40).map(\.text).joined(separator: "\n")
+        guard VenvObstruction.isVenvRemovalDenied(stepID: stepID, output: output),
+              let remedy = VenvObstruction(paths: paths).removalCommand() else {
+            return ("Step “\(stepID)” failed (exit code \(code)). See the log below.", nil)
+        }
+        let message = """
+        \(paths.venvRoot.path) can't be replaced: a directory inside it isn't writable by you, \
+        which is what running the engine's Python under sudo leaves behind. Clear it in Terminal, \
+        then install again.
+        """
+        return (message, remedy)
     }
 
     private var currentTotal: Int {

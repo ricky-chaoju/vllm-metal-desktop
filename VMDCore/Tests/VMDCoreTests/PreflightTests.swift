@@ -4,6 +4,15 @@ import Testing
 
 @Suite("Preflight")
 struct PreflightTests {
+    /// The wheel install path compiles nothing, but it does need `git`: the
+    /// engine wheel pins `mlx-lm` to a git URL and uv resolves it with the git
+    /// CLI, which on macOS arrives with the Command Line Tools.
+    @Test("checklist covers arch, OS, disk, and the tools that carry git")
+    func kinds() {
+        #expect(PreflightItem.Kind.allCases
+            == [.architecture, .operatingSystem, .diskSpace, .commandLineTools])
+    }
+
     @Test("architecture evaluation")
     func architecture() {
         #expect(Preflight.evaluateArchitecture(isAppleSilicon: true) == .ok)

@@ -6,6 +6,7 @@ import Testing
 struct EngineInstallerTests {
     let installer = EngineInstaller(paths: EnginePaths(home: URL(filePath: "/Users/test")))
     let wheel = URL(string: "https://example.com/vllm_metal-0.3.0-cp312-cp312-macosx_15_0_arm64.whl")!
+    let fresh = EngineInstaller.InstallMode.fresh(vllmCoreVersion: "0.27.1")
 
     @Test("uv resolves to the upstream default ~/.local/bin")
     func uvLocation() {
@@ -14,16 +15,16 @@ struct EngineInstallerTests {
 
     @Test("fresh install includes uv bootstrap only when uv is missing")
     func freshSteps() {
-        let withBootstrap = installer.buildSteps(mode: .fresh, uvExists: false, wheelURL: wheel)
+        let withBootstrap = installer.buildSteps(mode: fresh, uvExists: false, wheelURL: wheel)
         #expect(withBootstrap.map(\.id)
             == ["bootstrap-uv", "create-venv", "validate-python-arch", "install-vllm", "install-vllm-metal", "verify-engine"])
 
-        let withoutBootstrap = installer.buildSteps(mode: .fresh, uvExists: true, wheelURL: wheel)
+        let withoutBootstrap = installer.buildSteps(mode: fresh, uvExists: true, wheelURL: wheel)
         #expect(withoutBootstrap.map(\.id)
             == ["create-venv", "validate-python-arch", "install-vllm", "install-vllm-metal", "verify-engine"])
     }
 
-    @Test("update only installs the wheel and verifies (no recompile)")
+    @Test("update only installs the wheel and verifies (core untouched)")
     func updateSteps() {
         let steps = installer.buildSteps(mode: .update, uvExists: true, wheelURL: wheel)
         #expect(steps.map(\.id) == ["install-vllm-metal", "verify-engine"])

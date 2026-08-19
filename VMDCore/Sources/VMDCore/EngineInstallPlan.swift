@@ -1,21 +1,21 @@
 import Foundation
 
-/// Pinned versions and derived download URLs for an engine install.
-/// Defaults mirror `vllm-metal/install.sh` (docs/PLAN.md §2.1). `vllmVersion` is
-/// only a fallback — installs resolve the real base from the selected release's
-/// own install.sh (`GitHubReleaseClient.fetchRequiredVLLMBase`), so this never
-/// silently drifts behind upstream bumps.
+/// The app's own pinned versions and the download URLs derived from them.
+///
+/// These two pins are ours to choose; both mirror `vllm-metal/install.sh`. The
+/// vLLM *core* version deliberately isn't here — it belongs to the release
+/// being installed, moves whenever upstream bumps vLLM, and is read from that
+/// tag's install.sh (`GitHubReleaseClient.fetchRequiredVLLMBase`). Carrying a
+/// default for it would mean guessing a core version, which is how a wheel
+/// built against one base ends up installed onto another.
 public struct EngineInstallConfig: Sendable, Equatable {
-    public var vllmVersion: String
     public var uvVersion: String
     public var pythonVersion: String
 
     public init(
-        vllmVersion: String = "0.26.0",
         uvVersion: String = "0.9.18",
         pythonVersion: String = "3.12"
     ) {
-        self.vllmVersion = vllmVersion
         self.uvVersion = uvVersion
         self.pythonVersion = pythonVersion
     }
@@ -23,10 +23,11 @@ public struct EngineInstallConfig: Sendable, Equatable {
     /// The prebuilt macOS arm64 vLLM core wheel attached to vLLM's own
     /// release (v0.26.0 was the first to ship one — the tag install.sh pins
     /// by full URL because no index serves it). The "+cpu" local version
-    /// must be percent-encoded in the asset name.
-    public var vllmWheelURL: URL {
+    /// must be percent-encoded in the asset name. `coreVersion` comes from
+    /// install.sh's own `VLLM_VERSION` pin, so it is always URL-safe.
+    public func vllmWheelURL(coreVersion: String) -> URL {
         let cp = "cp" + pythonVersion.replacingOccurrences(of: ".", with: "")
-        return URL(string: "https://github.com/vllm-project/vllm/releases/download/v\(vllmVersion)/vllm-\(vllmVersion)%2Bcpu-\(cp)-\(cp)-macosx_11_0_arm64.whl")!
+        return URL(string: "https://github.com/vllm-project/vllm/releases/download/v\(coreVersion)/vllm-\(coreVersion)%2Bcpu-\(cp)-\(cp)-macosx_11_0_arm64.whl")!
     }
 
     public var uvInstallerURL: URL {
@@ -39,8 +40,8 @@ public struct InstallStep: Sendable, Identifiable {
     public let id: String
     public var title: String
     public var launch: ProcessLaunch
-    /// True for steps that take minutes (downloads, the vLLM core compile) — the
-    /// UI sets expectations accordingly.
+    /// True for steps that take minutes — the multi-gigabyte wheel downloads.
+    /// The UI sets expectations accordingly.
     public var isLongRunning: Bool
 
     public init(id: String, title: String, launch: ProcessLaunch, isLongRunning: Bool = false) {
@@ -89,6 +90,7 @@ public enum EngineInstallPlan {
     /// produced by `bootstrapUVStep` (or an existing system uv).
     public static func steps(
         config: EngineInstallConfig,
+        vllmCoreVersion: String,
         paths: EnginePaths,
         uv: URL,
         wheelURL: URL
@@ -105,7 +107,7 @@ public enum EngineInstallPlan {
             )
         )
 
-        // Mirrors install.sh:196-199 (require_arm64_python) — reject a Rosetta /
+        // Mirrors install.sh's `require_arm64_python` — reject a Rosetta /
         // x86_64 interpreter, which would otherwise only fail later at first Metal use.
         let validatePythonArch = InstallStep(
             id: "validate-python-arch",
@@ -122,10 +124,10 @@ public enum EngineInstallPlan {
         // step stays marked long-running).
         let installVLLM = InstallStep(
             id: "install-vllm",
-            title: "Install vLLM \(config.vllmVersion) (prebuilt wheel)",
+            title: "Install vLLM \(vllmCoreVersion) (prebuilt wheel)",
             launch: ProcessLaunch(
                 executableURL: uv,
-                arguments: ["pip", "install", config.vllmWheelURL.absoluteString],
+                arguments: ["pip", "install", config.vllmWheelURL(coreVersion: vllmCoreVersion).absoluteString],
                 environment: env
             ),
             isLongRunning: true
@@ -141,6 +143,8 @@ public enum EngineInstallPlan {
     }
 
     /// `uv pip install <wheel>` — the only step needed for an in-place update.
+    /// Resolving the wheel's dependencies reaches a git-pinned `mlx-lm`, which
+    /// uv fetches with the git CLI — hence Preflight's Command Line Tools check.
     /// `--reinstall-package` makes the outcome deterministic for every version
     /// switch: upgrade, downgrade, or reinstalling the already-installed version
     /// (which uv would otherwise skip as "already satisfied").

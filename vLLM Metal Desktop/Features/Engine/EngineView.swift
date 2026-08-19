@@ -337,7 +337,7 @@ struct EngineView: View {
             if !vm.preflightPassed {
                 Text("Resolve the system requirements above to enable installation.")
             } else {
-                Text("First install downloads ~2–3 GB and compiles vLLM core (several minutes). Engine updates are separate from app updates.")
+                Text("First install downloads ~2–3 GB of prebuilt wheels (several minutes). Engine updates are separate from app updates.")
             }
         }
     }

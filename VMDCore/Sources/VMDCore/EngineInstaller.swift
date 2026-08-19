@@ -27,13 +27,18 @@ public struct EngineInstaller: Sendable {
 
     /// A fresh install (re)creates the venv and installs the vLLM core wheel;
     /// an update just swaps the vllm-metal wheel in place — docs/PLAN.md §4.
-    public enum InstallMode: Sendable {
-        case fresh
+    ///
+    /// `fresh` carries the core version because there is no safe default for
+    /// it: the pin lives in the selected release's install.sh and moves with
+    /// upstream. An install that couldn't resolve it can't be expressed here,
+    /// which is the point — it has to fail before running anything.
+    public enum InstallMode: Sendable, Equatable {
+        case fresh(vllmCoreVersion: String)
         case update
     }
 
-    /// Whether a wheel-only update suffices, or the compiled vLLM core must be
-    /// rebuilt because the target release was built against a different base
+    /// Whether a wheel-only update suffices, or the vLLM core must be
+    /// reinstalled because the target release was built against a different base
     /// (the wheel swap never touches the core — the "updated but serve still
     /// shows the old vLLM version" trap). Unknown versions don't force the slow
     /// path; the post-install import verification catches real breakage.
@@ -48,13 +53,17 @@ public struct EngineInstaller: Sendable {
             paths: paths, uvDirectory: paths.uvBinary.deletingLastPathComponent()
         )
         switch mode {
-        case .fresh:
+        case .fresh(let vllmCoreVersion):
             var steps: [InstallStep] = []
             if !uvExists {
                 steps.append(EngineInstallPlan.bootstrapUVStep(config: config, installDir: paths.localBin))
             }
             steps.append(contentsOf: EngineInstallPlan.steps(
-                config: config, paths: paths, uv: paths.uvBinary, wheelURL: wheelURL
+                config: config,
+                vllmCoreVersion: vllmCoreVersion,
+                paths: paths,
+                uv: paths.uvBinary,
+                wheelURL: wheelURL
             ))
             return steps
         case .update:
@@ -72,7 +81,7 @@ public struct EngineInstaller: Sendable {
 
     /// Installs or updates the engine, streaming progress. The stream ends with
     /// `.completed` or `.failed`. Cancelling the consumer terminates the child.
-    public func install(wheelURL: URL, mode: InstallMode = .fresh) -> AsyncStream<InstallProgress> {
+    public func install(wheelURL: URL, mode: InstallMode) -> AsyncStream<InstallProgress> {
         let (stream, continuation) = AsyncStream<InstallProgress>.makeStream()
         let task = Task {
             defer { continuation.finish() }

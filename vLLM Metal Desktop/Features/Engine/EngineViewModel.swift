@@ -34,7 +34,7 @@ final class EngineViewModel {
     var preflight: [PreflightItem] = []
     var isCheckingPreflight = false
     var installedVersion: EngineVersion?
-    /// The compiled vLLM base (`vllm.__version__`) — what `vllm serve` banners show.
+    /// The installed vLLM core (`vllm.__version__`) — what `vllm serve` banners show.
     var installedCoreVersion: EngineVersion?
     var releases: [ReleaseInfo] = []
     var isCheckingUpdates = false
@@ -162,12 +162,12 @@ final class EngineViewModel {
     /// provision otherwise. A half-provisioned venv (failed first install) must go
     /// through `.fresh`; a wheel swap into it can never succeed.
     func installOrUpdate() async {
-        await runInstall(mode: hasWorkingEngine ? .update : .fresh)
+        await runInstall(forceFresh: !hasWorkingEngine)
     }
 
-    /// Nuke-and-rebuild: recreate the venv and recompile vLLM core from scratch.
+    /// Nuke-and-rebuild: recreate the venv and reinstall the vLLM core from scratch.
     func rebuild() async {
-        await runInstall(mode: .fresh)
+        await runInstall(forceFresh: true)
     }
 
     /// Removes the venv (weights in the HF cache stay). Re-arms onboarding so a
@@ -186,7 +186,7 @@ final class EngineViewModel {
         await runPreflight()
     }
 
-    private func runInstall(mode: EngineInstaller.InstallMode) async {
+    private func runInstall(forceFresh: Bool) async {
         guard !isRunningInstall else { return }
         isRunningInstall = true
         defer { isRunningInstall = false }
@@ -215,21 +215,36 @@ final class EngineViewModel {
         // release targets; if it differs from what's in the venv, a wheel swap
         // would leave the old core running — escalate to a fresh install
         // against the right base (cheap now: the core is a prebuilt wheel).
-        var mode = mode
-        var config = EngineInstallConfig()
         let requiredBase = try? await releaseClient.fetchRequiredVLLMBase(tag: release.tag)
         if let requiredBase {
-            config.vllmVersion = requiredBase.description
             appendLog("Release \(release.tag) targets vLLM core \(requiredBase).")
         }
-        if mode == .update {
+
+        var wantsFresh = forceFresh
+        if !wantsFresh {
             let core = await installed.installedCoreVersion()
             if EngineInstaller.needsCoreRebuild(requiredBase: requiredBase, installedCore: core) {
                 appendLog("Installed vLLM core is \(core?.description ?? "unknown") — reinstalling the core, a wheel-only update would keep the old base.")
-                mode = .fresh
+                wantsFresh = true
             }
         }
-        let installer = EngineInstaller(paths: paths, config: config)
+
+        let mode: EngineInstaller.InstallMode
+        if wantsFresh {
+            // Only that release's install.sh knows which core belongs with this
+            // wheel, and it moves whenever upstream bumps vLLM. Installing a
+            // guessed core yields a venv that imports fine and then fails at
+            // serve time, so stop here instead.
+            guard let requiredBase else {
+                phase = .failed("Couldn't read which vLLM core \(release.tag) needs — check your connection, then try again.")
+                return
+            }
+            mode = .fresh(vllmCoreVersion: requiredBase.description)
+        } else {
+            mode = .update
+        }
+
+        let installer = EngineInstaller(paths: paths)
 
         for await event in installer.install(wheelURL: wheelURL, mode: mode) {
             switch event {

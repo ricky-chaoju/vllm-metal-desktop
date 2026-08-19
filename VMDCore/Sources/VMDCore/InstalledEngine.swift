@@ -25,7 +25,7 @@ public struct InstalledEngine: Sendable {
         return Self.parseVersion(result.standardOutput)
     }
 
-    /// Reads the compiled vLLM *core* version (`vllm.__version__`). The wheel-only
+    /// Reads the installed vLLM *core* version (`vllm.__version__`). The wheel-only
     /// engine update never touches the core, so this is what reveals a stale base
     /// (the version banner `vllm serve` prints at startup).
     public func installedCoreVersion() async -> EngineVersion? {

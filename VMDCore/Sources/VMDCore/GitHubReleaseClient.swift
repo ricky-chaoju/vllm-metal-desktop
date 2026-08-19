@@ -231,9 +231,9 @@ public struct GitHubReleaseClient: Sendable {
     }
 
     /// The vLLM *core* version a release was built against, read from that tag's
-    /// `install.sh` (`local vllm_v="X.Y.Z"`). The engine wheel is a thin layer over
-    /// a compiled vLLM base — when upstream bumps the base, a wheel-only update
-    /// isn't enough and the caller must rebuild the core.
+    /// `install.sh` (`VLLM_VERSION="X.Y.Z"`). The engine wheel is a thin layer
+    /// over that exact base — when upstream bumps it, a wheel-only update isn't
+    /// enough and the caller must reinstall the core.
     public func fetchRequiredVLLMBase(tag: String) async throws -> EngineVersion? {
         let url = URL(string: "https://raw.githubusercontent.com/\(owner)/\(repo)/\(tag)/install.sh")!
         return Self.parseVLLMBase(fromInstallScript: String(decoding: try await get(url), as: UTF8.self))

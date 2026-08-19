@@ -228,7 +228,7 @@ struct GitHubReleaseTests {
         #expect(GitHubReleaseClient.parseVLLMBase(fromInstallScript: "no pin here") == nil)
     }
 
-    @Test("core rebuild needed exactly when the release targets a different compiled base")
+    @Test("core reinstall needed exactly when the release targets a different base")
     func coreRebuildDecision() {
         let v24 = EngineVersion("0.24.0")
         let v25 = EngineVersion("0.25.1")

@@ -44,8 +44,16 @@ public struct PreflightItem: Sendable, Identifiable {
     }
 }
 
-/// Gates engine installation on hard requirements (docs/PLAN.md §4 step 1):
-/// Apple Silicon, macOS version, free disk, and Xcode Command Line Tools.
+/// Gates engine installation on hard requirements: Apple Silicon, macOS
+/// version, free disk, and the Xcode Command Line Tools.
+///
+/// Nothing is compiled — vLLM core and the engine both install as prebuilt
+/// wheels ("No compiler required", vllm-metal docs/installation.md). The
+/// Command Line Tools are still required, for `git`: the engine wheel's
+/// metadata pins one dependency to a git URL (`mlx-lm @ git+https://…`,
+/// vllm-metal pyproject.toml), and uv resolves that by shelling out to the git
+/// CLI. On a Mac without the tools `/usr/bin/git` is only a shim that fails,
+/// so the install would die at its last step after gigabytes of downloads.
 ///
 /// Evaluation logic is split into pure `static` functions (unit-tested) from the
 /// system probing (`run()`), which reads the live machine.
@@ -138,6 +146,9 @@ public struct Preflight: Sendable {
         return items
     }
 
+    /// Probes with `xcode-select -p` rather than running `git`: on a Mac without
+    /// the tools, invoking the `/usr/bin/git` shim pops the system installer
+    /// dialog itself, which would fire behind the user's back during a refresh.
     private func checkCommandLineTools() async -> PreflightItem {
         let fix = ProcessLaunch(
             executableURL: URL(filePath: "/usr/bin/xcode-select"),
@@ -156,7 +167,7 @@ public struct Preflight: Sendable {
         return PreflightItem(
             kind: .commandLineTools,
             title: "Xcode Command Line Tools",
-            status: .failed("Required to compile vLLM core. Install, then re-check."),
+            status: .failed("The engine install needs git, which ships with these. Install, then re-check."),
             fix: fix
         )
     }
